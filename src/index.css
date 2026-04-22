@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Switzer Font - load from CDN */
+@font-face {
+  font-family: 'Switzer';
+  src: url('https://cdn.fontshare.com/wf/E2LXKZ4Y5OVTPC5IMDPKICCSSC5INMYH/MPIFPBCPYV5DCJ7CADRMUJR5KZACFBOX/W4XAVQYGGZVFUYHGQEXYXC4AWMD6HFVQ.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 0 0% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 10%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 351 73% 44%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 351 73% 44%;
+    --radius: 0px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-white text-[#1a1a1a] font-switzer antialiased;
+    font-feature-settings: 'kern' 1, 'liga' 1;
+    overflow-x: hidden;
+  }
+
+  /* Selection color - corporate red */
+  ::selection {
+    background-color: #c41e3a;
+    color: white;
+  }
+
+  /* Scrollbar - minimal */
+  ::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 0;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #999;
+  }
+}
+
+@layer components {
+  .label-uppercase {
+    @apply text-[13px] uppercase tracking-[0.1em] text-[#999];
+  }
+}
+
+/* Marquee animation pause on hover */
+.marquee-track:hover {
+  animation-play-state: paused;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
