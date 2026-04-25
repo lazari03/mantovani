@@ -13,7 +13,7 @@ interface ScrollVideoHeroProps {
   bgWord?: string;
 }
 
-const LERP_FACTOR = 0.5; // Increased for ultra-smooth video seeking
+const LERP_FACTOR = 0.85; // Maximize for ultra-fast, snappy video seeking
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
 
@@ -21,7 +21,7 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
   videoSrc = '/assets/hero/mixer_optimized.mp4',
   videoSrcWebm,
   posterSrc = '/assets/hero/mixer-poster.jpg',
-  scrollLength = 2.1, // Further reduced for even faster scroll effect
+  scrollLength = 1.5, // Minimized for fastest scroll effect
   eyebrow = 'Mantovani Beton.',
   headline = (
     <>
@@ -55,7 +55,18 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
     const handleLoadedMetadata = () => {
       videoDurationRef.current = video.duration;
       isVideoReadyRef.current = true;
-      video.pause();
+      // Force seek to 0 and trigger play/pause to render first frame (Samsung fix)
+      try {
+        video.currentTime = 0;
+        const playPromise = video.play();
+        if (playPromise && typeof playPromise.then === 'function') {
+          playPromise.then(() => video.pause()).catch(() => video.pause());
+        } else {
+          video.pause();
+        }
+      } catch (e) {
+        // Ignore errors
+      }
       setIsLoaded(true);
     };
 
@@ -131,14 +142,13 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
         // Lerp current time towards target time
         const diff = targetTimeRef.current - currentTimeRef.current;
 
-        if (Math.abs(diff) > 0.01) { // Lower threshold for more frequent updates
-          // Use cubic ease for even smoother interpolation
-          const eased = diff * LERP_FACTOR * LERP_FACTOR * LERP_FACTOR + diff * LERP_FACTOR * (1 - LERP_FACTOR * LERP_FACTOR);
-          currentTimeRef.current += eased;
+        if (Math.abs(diff) > 0.001) { // Ultra-low threshold for instant updates
+          // Snap almost directly to target for max speed
+          currentTimeRef.current += diff * LERP_FACTOR;
 
           // Set video time with safety checks
           try {
-            if (video.readyState >= 2 && Math.abs(video.currentTime - currentTimeRef.current) > 0.01) {
+            if (video.readyState >= 2 && Math.abs(video.currentTime - currentTimeRef.current) > 0.001) {
               video.currentTime = currentTimeRef.current;
             }
           } catch (err) {
@@ -208,7 +218,18 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
           className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden"
           style={{ transform: `translateY(${bgWordOffset}px)` }}
         >
-          <span className="text-[clamp(120px,20vw,300px)] font-bold text-white/[0.03] uppercase tracking-widest whitespace-nowrap select-none">
+          <span
+            className="font-bold text-white/[0.03] uppercase tracking-widest select-none"
+            style={{
+              fontSize: 'clamp(32px, 10vw, 120px)',
+              lineHeight: 1.1,
+              wordBreak: 'break-word',
+              whiteSpace: 'pre-line',
+              textAlign: 'center',
+              width: '100%',
+              display: 'block',
+            }}
+          >
             {bgWord}
           </span>
         </div>
