@@ -420,8 +420,8 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
         <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block z-20">
           {[
             { value: '25+', label: 'Vite' },
-            { value: '500+', label: 'Projekte' },
-            { value: '50k+', label: 'm³' },
+            { value: '5000+', label: 'Projekte' },
+            { value: '500k+', label: 'm³' },
           ].map((stat) => (
             <div key={stat.label} className="text-right mb-6 last:mb-0">
               <div className="text-3xl font-bold text-white">{stat.value}</div>

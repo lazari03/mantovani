@@ -174,8 +174,8 @@ export const TruckMixerHero: React.FC = () => {
         <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block z-20">
           {[
             { value: '25+', label: 'Vite Eksperiencë' },
-            { value: '500+', label: 'Projekte' },
-            { value: '50k+', label: 'm³ Beton' },
+            { value: '5000+', label: 'Projekte' },
+            { value: '500k+', label: 'm³ Beton' },
           ].map((stat) => (
             <div key={stat.label} className="text-right mb-8 last:mb-0">
               <div className="text-[clamp(28px,3vw,40px)] font-bold text-white leading-none">

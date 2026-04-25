@@ -4,6 +4,7 @@ import { ChevronDown } from 'lucide-react';
 interface ScrollImageSequenceHeroProps {
   frameCount?: number;
   framePath?: (idx: number) => string;
+  posterSrc?: string;
   scrollLength?: number;
   eyebrow?: string;
   headline?: React.ReactNode;
@@ -11,12 +12,11 @@ interface ScrollImageSequenceHeroProps {
 }
 
 const defaultFramePath = (idx: number) =>
-  `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.png`;
+  `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.jpg`;
 
 const MIN_PROGRESS = 0;
 const MAX_PROGRESS = 1;
 const PROGRESS_EPSILON = 0.0005;
-const LERP_FACTOR = 0.12;
 const WHEEL_SENSITIVITY = 0.0009;
 const TOUCH_SENSITIVITY = 0.0035;
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
@@ -30,37 +30,10 @@ const shouldIgnoreKeyboardTarget = (target: EventTarget | null) => {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
 };
 
-type FrameSource = ImageBitmap | HTMLImageElement;
-
-// createImageBitmap with fallback for older Safari
-const toFrameSource = (img: HTMLImageElement): Promise<FrameSource> => {
-  if (typeof createImageBitmap === 'function') {
-    return createImageBitmap(img).catch(() => img);
-  }
-  return Promise.resolve(img);
-};
-
-// Draw src onto ctx using "cover" scaling (maintain aspect ratio, fill canvas)
-const drawCover = (
-  ctx: CanvasRenderingContext2D,
-  src: FrameSource,
-  cw: number,
-  ch: number
-) => {
-  const sw = src instanceof ImageBitmap ? src.width : src.naturalWidth;
-  const sh = src instanceof ImageBitmap ? src.height : src.naturalHeight;
-  if (!sw || !sh) return;
-  const scale = Math.max(cw / sw, ch / sh);
-  const dw = sw * scale;
-  const dh = sh * scale;
-  const dx = (cw - dw) / 2;
-  const dy = (ch - dh) / 2;
-  ctx.drawImage(src as CanvasImageSource, dx, dy, dw, dh);
-};
-
 export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = ({
-  frameCount = 171,
+  frameCount = 339,
   framePath = defaultFramePath,
+  posterSrc = '/assets/hero/mixer-poster.jpeg',
   scrollLength = 1,
   eyebrow = 'Mantovani Beton.',
   headline = (
@@ -72,97 +45,47 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   ),
   bgWord = 'MANTOVANI',
 }) => {
-  const sectionRef = useRef<HTMLElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number>(0);
-  const touchYRef = useRef<number | null>(null);
-  const currentProgressRef = useRef(0);
-  const targetProgressRef = useRef(0);
+  const sectionRef   = useRef<HTMLElement>(null);
+  // Two imgs: loImg is the base frame, hiImg is the next frame faded in by alpha
+  const loImgRef     = useRef<HTMLImageElement>(null);
+  const hiImgRef     = useRef<HTMLImageElement>(null);
+  const progressFill = useRef<HTMLDivElement>(null);
+  const bgWordRef    = useRef<HTMLDivElement>(null);
+
+  const rafRef               = useRef<number>(0);
+  const touchYRef            = useRef<number | null>(null);
+  const currentProgressRef   = useRef(0);
+  const targetProgressRef    = useRef(0);
   const pendingPageScrollRef = useRef(0);
-  const framesRef = useRef<FrameSource[]>([]);
-  const loadedCountRef = useRef(0);
-  const lastDrawnProgressRef = useRef(-1);
+  const preloadedRef         = useRef<HTMLImageElement[]>([]);
+  // Track which frame is currently set on each img element
+  const loIdxRef = useRef(-1);
+  const hiIdxRef = useRef(-1);
 
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [showHeadline, setShowHeadline] = useState(false);
+  const [isLoaded, setIsLoaded]             = useState(false);
+  const [showHeadline, setShowHeadline]     = useState(false);
   const [showScrollHint, setShowScrollHint] = useState(true);
-  const [progressBarWidth, setProgressBarWidth] = useState(0);
-  const [bgWordOffset, setBgWordOffset] = useState(0);
 
-  // Set canvas internal resolution to physical pixels (sharp on retina / high-DPI)
-  const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.round(window.innerWidth * dpr);
-    canvas.height = Math.round(window.innerHeight * dpr);
-  }, []);
-
-  // Blend two adjacent frames for sub-frame smoothness; cover-scale to canvas
-  const drawBlended = useCallback(
-    (exactIdx: number) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const frames = framesRef.current;
-      const cw = canvas.width;
-      const ch = canvas.height;
-
-      const lo = Math.floor(exactIdx);
-      const hi = Math.min(lo + 1, frameCount - 1);
-      const alpha = exactIdx - lo;
-
-      const fLo = frames[lo];
-      const fHi = frames[hi];
-      if (!fLo) return;
-
-      ctx.globalAlpha = 1;
-      drawCover(ctx, fLo, cw, ch);
-
-      if (fHi && alpha > 0.01) {
-        ctx.globalAlpha = alpha;
-        drawCover(ctx, fHi, cw, ch);
-        ctx.globalAlpha = 1;
-      }
-    },
-    [frameCount]
-  );
-
-  // Preload all frames; show as soon as frame 0 is ready
+  // Preload all frames; mark ready as soon as frame 0 is in memory
   useEffect(() => {
-    const frames: FrameSource[] = new Array(frameCount);
-    framesRef.current = frames;
-    loadedCountRef.current = 0;
+    const pool: HTMLImageElement[] = new Array(frameCount);
+    preloadedRef.current = pool;
 
-    for (let i = 1; i <= frameCount; i++) {
-      const idx = i - 1;
+    for (let i = 0; i < frameCount; i++) {
       const img = new window.Image();
-      img.src = framePath(i);
-      img.onload = () => {
-        toFrameSource(img).then((src) => {
-          frames[idx] = src;
-          loadedCountRef.current += 1;
-          // Show hero the moment frame 1 (index 0) is decoded
-          if (idx === 0) {
-            setIsLoaded(true);
-            drawBlended(0);
-          }
-        });
-      };
+      img.src = framePath(i + 1);
+      pool[i] = img;
+      if (i === 0) {
+        img.onload = () => {
+          // Prime loImg with frame 0 immediately
+          const lo = loImgRef.current;
+          if (lo) lo.src = img.src;
+          loIdxRef.current = 0;
+          setIsLoaded(true);
+        };
+      }
     }
-  }, [frameCount, framePath, drawBlended]);
-
-  // Resize canvas on mount and window resize; redraw current frame
-  useEffect(() => {
-    const onResize = () => {
-      resizeCanvas();
-      drawBlended(currentProgressRef.current * (frameCount - 1));
-    };
-    onResize();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [resizeCanvas, drawBlended, frameCount]);
+  }, [frameCount, framePath]);
 
   const isSectionVisible = useCallback(() => {
     const section = sectionRef.current;
@@ -192,35 +115,63 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     []
   );
 
-  // RAF loop: lerp progress → blend frames → update UI state → pass overflow scroll
   useEffect(() => {
+    let prevShowHeadline   = false;
+    let prevShowScrollHint = true;
+
     const animate = () => {
-      const current = currentProgressRef.current;
-      const target = targetProgressRef.current;
-      const diff = target - current;
+      currentProgressRef.current = targetProgressRef.current;
+      const progress  = currentProgressRef.current;
+      const exactIdx  = progress * (frameCount - 1);
+      const lo        = Math.floor(exactIdx);
+      const hi        = Math.min(lo + 1, frameCount - 1);
+      const alpha     = exactIdx - lo; // 0 → 1 between lo and hi
 
-      if (Math.abs(diff) <= PROGRESS_EPSILON) {
-        currentProgressRef.current = target;
-      } else {
-        currentProgressRef.current = clamp(current + diff * LERP_FACTOR, MIN_PROGRESS, MAX_PROGRESS);
+      const pool    = preloadedRef.current;
+      const loEl    = loImgRef.current;
+      const hiEl    = hiImgRef.current;
+
+      if (loEl && lo !== loIdxRef.current) {
+        const img = pool[lo];
+        if (img?.complete && img.naturalWidth > 0) {
+          loEl.src = img.src;
+          loIdxRef.current = lo;
+        }
+      }
+      if (hiEl && hi !== hiIdxRef.current) {
+        const img = pool[hi];
+        if (img?.complete && img.naturalWidth > 0) {
+          hiEl.src = img.src;
+          hiIdxRef.current = hi;
+        }
       }
 
-      const progress = currentProgressRef.current;
+      // hiImg sits on top of loImg; its opacity blends the two frames continuously
+      if (hiEl) hiEl.style.opacity = String(alpha);
 
-      if (Math.abs(progress - lastDrawnProgressRef.current) > 0.00001) {
-        drawBlended(progress * (frameCount - 1));
-        lastDrawnProgressRef.current = progress;
+      // Direct DOM: progress bar & parallax word — zero React overhead
+      if (progressFill.current)
+        progressFill.current.style.width = `${progress * 100}%`;
+      if (bgWordRef.current)
+        bgWordRef.current.style.transform = `translateY(${-progress * 200}px)`;
+
+      // React state only on threshold crossings
+      const nextShowHeadline   = progress > HEADLINE_REVEAL_THRESHOLD;
+      const nextShowScrollHint = progress < SCROLL_HINT_FADE_THRESHOLD;
+      if (nextShowHeadline !== prevShowHeadline) {
+        prevShowHeadline = nextShowHeadline;
+        setShowHeadline(nextShowHeadline);
+      }
+      if (nextShowScrollHint !== prevShowScrollHint) {
+        prevShowScrollHint = nextShowScrollHint;
+        setShowScrollHint(nextShowScrollHint);
       }
 
-      setProgressBarWidth(progress * 100);
-      setShowHeadline(progress > HEADLINE_REVEAL_THRESHOLD);
-      setShowScrollHint(progress < SCROLL_HINT_FADE_THRESHOLD);
-      setBgWordOffset(-progress * 200);
-
+      // Release page scroll at boundaries
       const pending = pendingPageScrollRef.current;
       if (Math.abs(pending) > 0) {
         const atBottom = pending > 0 && progress >= MAX_PROGRESS - PROGRESS_EPSILON;
-        const atTop = pending < 0 && progress <= MIN_PROGRESS + PROGRESS_EPSILON;
+        const atTop    = pending < 0 && progress <= MIN_PROGRESS + PROGRESS_EPSILON;
         if (atBottom || atTop) {
           window.scrollBy({ top: pending, left: 0, behavior: 'auto' });
           pendingPageScrollRef.current = 0;
@@ -232,9 +183,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     rafRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [drawBlended, frameCount]);
+  }, [frameCount]);
 
-  // Intercept scroll/touch/keyboard until animation completes
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
@@ -246,9 +196,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       if (!isSectionVisible() || shouldIgnoreKeyboardTarget(e.target)) return;
       let deltaY = 0;
       if (e.key === 'ArrowDown') deltaY = 120;
-      if (e.key === 'ArrowUp') deltaY = -120;
-      if (e.key === 'PageDown') deltaY = 360;
-      if (e.key === 'PageUp') deltaY = -360;
+      if (e.key === 'ArrowUp')   deltaY = -120;
+      if (e.key === 'PageDown')  deltaY = 360;
+      if (e.key === 'PageUp')    deltaY = -360;
       if (e.key === ' ' || e.key === 'Spacebar') deltaY = e.shiftKey ? -360 : 360;
       if (deltaY === 0 || !canConsumeScroll(deltaY)) return;
       e.preventDefault();
@@ -262,7 +212,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     const handleTouchMove = (e: TouchEvent) => {
       if (!isSectionVisible() || touchYRef.current === null || e.touches.length !== 1) return;
-      const nextY = e.touches[0].clientY;
+      const nextY  = e.touches[0].clientY;
       const deltaY = touchYRef.current - nextY;
       touchYRef.current = nextY;
       if (!canConsumeScroll(deltaY)) return;
@@ -272,68 +222,70 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     const clearTouch = () => { touchYRef.current = null; };
 
-    window.addEventListener('wheel', handleWheel, { passive: false, capture: true });
-    window.addEventListener('keydown', handleKeyDown, { capture: true });
-    window.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
-    window.addEventListener('touchmove', handleTouchMove, { passive: false, capture: true });
-    window.addEventListener('touchend', clearTouch, { capture: true });
-    window.addEventListener('touchcancel', clearTouch, { capture: true });
+    window.addEventListener('wheel',       handleWheel,      { passive: false, capture: true });
+    window.addEventListener('keydown',     handleKeyDown,    { capture: true });
+    window.addEventListener('touchstart',  handleTouchStart, { passive: true,  capture: true });
+    window.addEventListener('touchmove',   handleTouchMove,  { passive: false, capture: true });
+    window.addEventListener('touchend',    clearTouch,       { capture: true });
+    window.addEventListener('touchcancel', clearTouch,       { capture: true });
 
     return () => {
-      window.removeEventListener('wheel', handleWheel, true);
-      window.removeEventListener('keydown', handleKeyDown, true);
-      window.removeEventListener('touchstart', handleTouchStart, true);
-      window.removeEventListener('touchmove', handleTouchMove, true);
-      window.removeEventListener('touchend', clearTouch, true);
-      window.removeEventListener('touchcancel', clearTouch, true);
+      window.removeEventListener('wheel',       handleWheel,      true);
+      window.removeEventListener('keydown',     handleKeyDown,    true);
+      window.removeEventListener('touchstart',  handleTouchStart, true);
+      window.removeEventListener('touchmove',   handleTouchMove,  true);
+      window.removeEventListener('touchend',    clearTouch,       true);
+      window.removeEventListener('touchcancel', clearTouch,       true);
     };
   }, [applyProgressDelta, canConsumeScroll, isSectionVisible]);
-
-  const sectionHeight = `${Math.max(scrollLength, 1) * 100}vh`;
 
   return (
     <section
       ref={sectionRef}
       className="relative w-full"
-      style={{ height: sectionHeight }}
+      style={{ height: `${Math.max(scrollLength, 1) * 100}vh` }}
     >
       <div className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]">
-        {/* Loading state */}
-        {!isLoaded && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#07070a]">
-            <div className="text-center">
-              <div className="w-12 h-12 border-2 border-amber-500 border-t-transparent rounded-full animate-spin mb-4 mx-auto" />
-              <p className="text-zinc-500 text-sm uppercase tracking-widest">Loading</p>
-            </div>
-          </div>
-        )}
 
-        {/* Canvas — cover-scaled, DPR-aware, GPU-blended */}
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0"
-          style={{
-            width: '100%',
-            height: '100%',
-            opacity: isLoaded ? 1 : 0,
-            transition: 'opacity 0.5s ease',
-          }}
+        {/* Poster — shown immediately, fades out once frames are ready */}
+        <img
+          src={posterSrc}
+          alt="" aria-hidden draggable={false}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{ opacity: isLoaded ? 0 : 1, transition: 'opacity 0.35s ease' }}
+        />
+
+        {/* Base frame (lo) — always fully opaque */}
+        <img
+          ref={loImgRef}
+          alt="" aria-hidden draggable={false}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1 }}
+        />
+
+        {/* Overlay frame (hi) — opacity driven by fractional progress between lo and hi */}
+        <img
+          ref={hiImgRef}
+          alt="" aria-hidden draggable={false}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{ opacity: 0, zIndex: 2 }}
         />
 
         {/* Gradient overlays */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#07070a] via-transparent to-[#07070a]/50 pointer-events-none" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#07070a]/80 via-transparent to-[#07070a]/60 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#07070a] via-transparent to-[#07070a]/50 pointer-events-none" style={{ zIndex: 3 }} />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#07070a]/80 via-transparent to-[#07070a]/60 pointer-events-none" style={{ zIndex: 3 }} />
 
         {/* Bottom vignette */}
         <div
           className="absolute bottom-0 left-0 w-full h-48 pointer-events-none"
-          style={{ background: 'linear-gradient(to top, #f7f7f7 0%, transparent 100%)' }}
+          style={{ background: 'linear-gradient(to top, #f7f7f7 0%, transparent 100%)', zIndex: 3 }}
         />
 
         {/* Background parallax word */}
         <div
+          ref={bgWordRef}
           className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden"
-          style={{ transform: `translateY(${bgWordOffset}px)` }}
+          style={{ zIndex: 4 }}
         >
           <span
             className="font-bold text-white/[0.03] uppercase tracking-widest select-none"
@@ -351,23 +303,21 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           </span>
         </div>
 
-        {/* Brand bar top-left */}
-        <div className="absolute top-8 left-8 z-20">
+        {/* Brand bar */}
+        <div className="absolute top-8 left-8" style={{ zIndex: 20 }}>
           <p className="text-zinc-500 text-xs uppercase tracking-[0.3em]">{eyebrow}</p>
         </div>
 
-        {/* Top progress bar */}
-        <div className="absolute top-0 left-0 w-full h-1 bg-zinc-800/50 z-30">
-          <div
-            className="h-full bg-amber-500 transition-none"
-            style={{ width: `${progressBarWidth}%` }}
-          />
+        {/* Progress bar */}
+        <div className="absolute top-0 left-0 w-full h-1 bg-zinc-800/50" style={{ zIndex: 30 }}>
+          <div ref={progressFill} className="h-full bg-amber-500" style={{ width: '0%' }} />
         </div>
 
         {/* Headline — reveals at 78% */}
         <div
-          className="absolute bottom-24 left-0 right-0 flex justify-center px-6 z-20"
+          className="absolute bottom-24 left-0 right-0 flex justify-center px-6"
           style={{
+            zIndex: 20,
             opacity: showHeadline ? 1 : 0,
             transform: `translateY(${showHeadline ? 0 : 30}px)`,
             transition: 'opacity 0.6s ease, transform 0.6s ease',
@@ -380,8 +330,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
         {/* Scroll hint — fades at 5% */}
         <div
-          className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-20"
-          style={{ opacity: showScrollHint ? 1 : 0, transition: 'opacity 0.5s ease' }}
+          className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3"
+          style={{ zIndex: 20, opacity: showScrollHint ? 1 : 0, transition: 'opacity 0.5s ease' }}
         >
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
             Scroll to explore
@@ -389,10 +339,10 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           <ChevronDown className="w-5 h-5 text-zinc-500 animate-bounce" />
         </div>
 
-        {/* Stats — right side, desktop only */}
-        <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block z-20">
+        {/* Stats — desktop only */}
+        <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block" style={{ zIndex: 20 }}>
           {[
-            { value: '25+', label: 'Vite' },
+            { value: '25+',  label: 'Vite' },
             { value: '500+', label: 'Projekte' },
             { value: '50k+', label: 'm³' },
           ].map((stat) => (
