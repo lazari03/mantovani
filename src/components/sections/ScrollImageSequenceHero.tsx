@@ -45,7 +45,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     </>
   ),
   bgWord = 'MANTOVANI',
-  posterSrc = '/assets/hero/mixer-poster.jpeg',
 }) => {
   const sectionRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
