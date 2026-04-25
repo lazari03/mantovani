@@ -13,7 +13,7 @@ interface ScrollVideoHeroProps {
   bgWord?: string;
 }
 
-const LERP_FACTOR = 0.38; // Further increased for even faster video seeking
+const LERP_FACTOR = 0.5; // Increased for ultra-smooth video seeking
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
 
@@ -131,12 +131,14 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
         // Lerp current time towards target time
         const diff = targetTimeRef.current - currentTimeRef.current;
 
-        if (Math.abs(diff) > 0.045) { // Only update if difference is significant (tuned)
-          currentTimeRef.current += diff * LERP_FACTOR;
+        if (Math.abs(diff) > 0.01) { // Lower threshold for more frequent updates
+          // Use cubic ease for even smoother interpolation
+          const eased = diff * LERP_FACTOR * LERP_FACTOR * LERP_FACTOR + diff * LERP_FACTOR * (1 - LERP_FACTOR * LERP_FACTOR);
+          currentTimeRef.current += eased;
 
           // Set video time with safety checks
           try {
-            if (video.readyState >= 2 && Math.abs(video.currentTime - currentTimeRef.current) > 0.03) {
+            if (video.readyState >= 2 && Math.abs(video.currentTime - currentTimeRef.current) > 0.01) {
               video.currentTime = currentTimeRef.current;
             }
           } catch (err) {
