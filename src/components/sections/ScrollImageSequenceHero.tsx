@@ -8,7 +8,6 @@ interface ScrollImageSequenceHeroProps {
   eyebrow?: string;
   headline?: React.ReactNode;
   bgWord?: string;
-  posterSrc?: string;
 }
 
 const defaultFramePath = (idx: number) =>
@@ -17,7 +16,6 @@ const defaultFramePath = (idx: number) =>
 const MIN_PROGRESS = 0;
 const MAX_PROGRESS = 1;
 const PROGRESS_EPSILON = 0.0005;
-// Higher lerp = more responsive to input; blending handles visual continuity
 const LERP_FACTOR = 0.12;
 const WHEEL_SENSITIVITY = 0.0009;
 const TOUCH_SENSITIVITY = 0.0035;
@@ -30,6 +28,34 @@ const shouldIgnoreKeyboardTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
+};
+
+type FrameSource = ImageBitmap | HTMLImageElement;
+
+// createImageBitmap with fallback for older Safari
+const toFrameSource = (img: HTMLImageElement): Promise<FrameSource> => {
+  if (typeof createImageBitmap === 'function') {
+    return createImageBitmap(img).catch(() => img);
+  }
+  return Promise.resolve(img);
+};
+
+// Draw src onto ctx using "cover" scaling (maintain aspect ratio, fill canvas)
+const drawCover = (
+  ctx: CanvasRenderingContext2D,
+  src: FrameSource,
+  cw: number,
+  ch: number
+) => {
+  const sw = src instanceof ImageBitmap ? src.width : src.naturalWidth;
+  const sh = src instanceof ImageBitmap ? src.height : src.naturalHeight;
+  if (!sw || !sh) return;
+  const scale = Math.max(cw / sw, ch / sh);
+  const dw = sw * scale;
+  const dh = sh * scale;
+  const dx = (cw - dw) / 2;
+  const dy = (ch - dh) / 2;
+  ctx.drawImage(src as CanvasImageSource, dx, dy, dw, dh);
 };
 
 export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = ({
@@ -53,8 +79,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const currentProgressRef = useRef(0);
   const targetProgressRef = useRef(0);
   const pendingPageScrollRef = useRef(0);
-  // Store GPU-resident bitmaps for zero-copy drawImage
-  const bitmapsRef = useRef<ImageBitmap[]>([]);
+  const framesRef = useRef<FrameSource[]>([]);
   const loadedCountRef = useRef(0);
   const lastDrawnProgressRef = useRef(-1);
 
@@ -64,10 +89,50 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const [progressBarWidth, setProgressBarWidth] = useState(0);
   const [bgWordOffset, setBgWordOffset] = useState(0);
 
-  // Preload frames → convert to ImageBitmap (GPU-resident, fastest drawImage source)
+  // Set canvas internal resolution to physical pixels (sharp on retina / high-DPI)
+  const resizeCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(window.innerWidth * dpr);
+    canvas.height = Math.round(window.innerHeight * dpr);
+  }, []);
+
+  // Blend two adjacent frames for sub-frame smoothness; cover-scale to canvas
+  const drawBlended = useCallback(
+    (exactIdx: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const frames = framesRef.current;
+      const cw = canvas.width;
+      const ch = canvas.height;
+
+      const lo = Math.floor(exactIdx);
+      const hi = Math.min(lo + 1, frameCount - 1);
+      const alpha = exactIdx - lo;
+
+      const fLo = frames[lo];
+      const fHi = frames[hi];
+      if (!fLo) return;
+
+      ctx.globalAlpha = 1;
+      drawCover(ctx, fLo, cw, ch);
+
+      if (fHi && alpha > 0.01) {
+        ctx.globalAlpha = alpha;
+        drawCover(ctx, fHi, cw, ch);
+        ctx.globalAlpha = 1;
+      }
+    },
+    [frameCount]
+  );
+
+  // Preload all frames; show as soon as frame 0 is ready
   useEffect(() => {
-    const bitmaps: ImageBitmap[] = new Array(frameCount);
-    bitmapsRef.current = bitmaps;
+    const frames: FrameSource[] = new Array(frameCount);
+    framesRef.current = frames;
     loadedCountRef.current = 0;
 
     for (let i = 1; i <= frameCount; i++) {
@@ -75,67 +140,29 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       const img = new window.Image();
       img.src = framePath(i);
       img.onload = () => {
-        createImageBitmap(img).then((bmp) => {
-          bitmaps[idx] = bmp;
+        toFrameSource(img).then((src) => {
+          frames[idx] = src;
           loadedCountRef.current += 1;
-          if (loadedCountRef.current === 1) {
+          // Show hero the moment frame 1 (index 0) is decoded
+          if (idx === 0) {
             setIsLoaded(true);
-            // Draw first frame immediately
-            const canvas = canvasRef.current;
-            const ctx = canvas?.getContext('2d');
-            if (canvas && ctx) {
-              ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-            }
+            drawBlended(0);
           }
         });
       };
     }
-  }, [frameCount, framePath]);
+  }, [frameCount, framePath, drawBlended]);
 
-  // Blended draw: interpolate between two adjacent frames for sub-frame smoothness
-  const drawBlended = useCallback(
-    (exactIdx: number) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const bitmaps = bitmapsRef.current;
-
-      const lo = Math.floor(exactIdx);
-      const hi = Math.min(lo + 1, frameCount - 1);
-      const alpha = exactIdx - lo;
-
-      const bLo = bitmaps[lo];
-      const bHi = bitmaps[hi];
-      if (!bLo) return;
-
-      ctx.globalAlpha = 1;
-      ctx.drawImage(bLo, 0, 0, canvas.width, canvas.height);
-
-      if (bHi && alpha > 0.01) {
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(bHi, 0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1;
-      }
-    },
-    [frameCount]
-  );
-
-  // Keep canvas resolution in sync with window
+  // Resize canvas on mount and window resize; redraw current frame
   useEffect(() => {
-    const resize = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      // Redraw at current progress after resize
-      const exactIdx = currentProgressRef.current * (frameCount - 1);
-      drawBlended(exactIdx);
+    const onResize = () => {
+      resizeCanvas();
+      drawBlended(currentProgressRef.current * (frameCount - 1));
     };
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, [drawBlended, frameCount]);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [resizeCanvas, drawBlended, frameCount]);
 
   const isSectionVisible = useCallback(() => {
     const section = sectionRef.current;
@@ -157,7 +184,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       const prev = targetProgressRef.current;
       const next = clamp(prev + deltaProgress, MIN_PROGRESS, MAX_PROGRESS);
       targetProgressRef.current = next;
-
       if (!passOverflow || sensitivity === 0) return;
       const overflow = prev + deltaProgress - next;
       if (Math.abs(overflow) <= PROGRESS_EPSILON) return;
@@ -166,7 +192,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     []
   );
 
-  // RAF loop: lerp progress, blend frames, update UI state
+  // RAF loop: lerp progress → blend frames → update UI state → pass overflow scroll
   useEffect(() => {
     const animate = () => {
       const current = currentProgressRef.current;
@@ -181,7 +207,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
       const progress = currentProgressRef.current;
 
-      // Only redraw canvas when progress has actually changed
       if (Math.abs(progress - lastDrawnProgressRef.current) > 0.00001) {
         drawBlended(progress * (frameCount - 1));
         lastDrawnProgressRef.current = progress;
@@ -209,7 +234,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     return () => cancelAnimationFrame(rafRef.current);
   }, [drawBlended, frameCount]);
 
-  // Intercept scroll/touch/keyboard while animation is running
+  // Intercept scroll/touch/keyboard until animation completes
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
@@ -283,14 +308,15 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           </div>
         )}
 
-        {/* Canvas — GPU-blended frame renderer */}
+        {/* Canvas — cover-scaled, DPR-aware, GPU-blended */}
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 w-full h-full"
+          className="absolute inset-0"
           style={{
+            width: '100%',
+            height: '100%',
             opacity: isLoaded ? 1 : 0,
             transition: 'opacity 0.5s ease',
-            objectFit: 'cover',
           }}
         />
 
