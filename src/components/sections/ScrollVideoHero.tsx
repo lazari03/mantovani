@@ -13,15 +13,15 @@ interface ScrollVideoHeroProps {
   bgWord?: string;
 }
 
-const LERP_FACTOR = 0.12;
+const LERP_FACTOR = 0.38; // Further increased for even faster video seeking
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
 
 export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
-  videoSrc = '/assets/hero/mixer.mp4',
+  videoSrc = '/assets/hero/mixer_optimized.mp4',
   videoSrcWebm,
   posterSrc = '/assets/hero/mixer-poster.jpg',
-  scrollLength = 4,
+  scrollLength = 2.1, // Further reduced for even faster scroll effect
   eyebrow = 'Mantovani Beton.',
   headline = (
     <>
@@ -131,12 +131,12 @@ export const ScrollVideoHero: React.FC<ScrollVideoHeroProps> = ({
         // Lerp current time towards target time
         const diff = targetTimeRef.current - currentTimeRef.current;
 
-        if (Math.abs(diff) > 0.01) {
+        if (Math.abs(diff) > 0.045) { // Only update if difference is significant (tuned)
           currentTimeRef.current += diff * LERP_FACTOR;
 
           // Set video time with safety checks
           try {
-            if (video.readyState >= 2) {
+            if (video.readyState >= 2 && Math.abs(video.currentTime - currentTimeRef.current) > 0.03) {
               video.currentTime = currentTimeRef.current;
             }
           } catch (err) {

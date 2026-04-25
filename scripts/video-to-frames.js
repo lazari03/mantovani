@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const VIDEO_PATH = path.join(__dirname, '../public/video/mixer.mp4');
+const VIDEO_PATH = path.join(__dirname, '../public/video/mixer_optimized.mp4');
 const OUTPUT_DIR = path.join(__dirname, '../public/frames');
 
 // Create output directory
