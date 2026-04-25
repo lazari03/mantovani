@@ -21,8 +21,8 @@ const WHEEL_SENSITIVITY = 0.0009;
 const TOUCH_SENSITIVITY = 0.0035;
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
-const LOOKAHEAD = 60; // frames to keep loaded ahead of current position
-const INITIAL_BATCH = 60; // frames to load on mount before user scrolls
+const LOOKAHEAD = 40; // frames to keep loaded ahead of current position
+const INITIAL_BATCH = 40; // frames to load on mount before user scrolls
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
