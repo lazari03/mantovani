@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
-import { ScrollVideoHero } from '@/components/sections/ScrollVideoHero';
+import { ScrollImageSequenceHero } from '@/components/sections/ScrollImageSequenceHero';
 import { About } from '@/components/sections/About';
 import { Services } from '@/components/sections/Services';
 import { WhyUs } from '@/components/sections/WhyUs';
@@ -41,7 +41,7 @@ function App() {
       )}
       <Header onNavigate={handleNavigate} />
       <main style={{ filter: loading ? 'blur(2px)' : 'none', pointerEvents: loading ? 'none' : 'auto' }}>
-        <ScrollVideoHero />
+        <ScrollImageSequenceHero />
         <About />
         <Services />
         <WhyUs />
