@@ -21,6 +21,8 @@ const WHEEL_SENSITIVITY = 0.0009;
 const TOUCH_SENSITIVITY = 0.0035;
 const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
+const LOOKAHEAD = 60; // frames to keep loaded ahead of current position
+const INITIAL_BATCH = 60; // frames to load on mount before user scrolls
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -46,7 +48,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   bgWord = 'MANTOVANI',
 }) => {
   const sectionRef   = useRef<HTMLElement>(null);
-  // Two imgs: loImg is the base frame, hiImg is the next frame faded in by alpha
   const loImgRef     = useRef<HTMLImageElement>(null);
   const hiImgRef     = useRef<HTMLImageElement>(null);
   const progressFill = useRef<HTMLDivElement>(null);
@@ -57,8 +58,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const currentProgressRef   = useRef(0);
   const targetProgressRef    = useRef(0);
   const pendingPageScrollRef = useRef(0);
-  const preloadedRef         = useRef<HTMLImageElement[]>([]);
-  // Track which frame is currently set on each img element
+  const preloadedRef         = useRef<(HTMLImageElement | null)[]>([]);
+  const loadFrameRef         = useRef<(i: number) => void>(() => {});
   const loIdxRef = useRef(-1);
   const hiIdxRef = useRef(-1);
 
@@ -66,25 +67,39 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const [showHeadline, setShowHeadline]     = useState(false);
   const [showScrollHint, setShowScrollHint] = useState(true);
 
-  // Preload all frames; mark ready as soon as frame 0 is in memory
+  // Progressive preload: load frame 0 immediately, then INITIAL_BATCH frames,
+  // then load on-demand via lookahead in the RAF loop.
   useEffect(() => {
-    const pool: HTMLImageElement[] = new Array(frameCount);
+    const pool: (HTMLImageElement | null)[] = new Array(frameCount).fill(null);
     preloadedRef.current = pool;
 
-    for (let i = 0; i < frameCount; i++) {
+    const loadFrame = (i: number) => {
+      if (i < 0 || i >= frameCount || pool[i]) return;
       const img = new window.Image();
-      img.src = framePath(i + 1);
       pool[i] = img;
+      // Give frame 0 maximum priority so the poster swaps out ASAP
       if (i === 0) {
+        (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
         img.onload = () => {
-          // Prime loImg with frame 0 immediately
           const lo = loImgRef.current;
           if (lo) lo.src = img.src;
           loIdxRef.current = 0;
           setIsLoaded(true);
         };
       }
+      img.src = framePath(i + 1);
+    };
+
+    loadFrameRef.current = loadFrame;
+
+    // Load first batch only — RAF loop handles the rest as user scrolls
+    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) {
+      loadFrame(i);
     }
+
+    return () => {
+      loadFrameRef.current = () => {};
+    };
   }, [frameCount, framePath]);
 
   const isSectionVisible = useCallback(() => {
@@ -121,15 +136,22 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     const animate = () => {
       currentProgressRef.current = targetProgressRef.current;
-      const progress  = currentProgressRef.current;
-      const exactIdx  = progress * (frameCount - 1);
-      const lo        = Math.floor(exactIdx);
-      const hi        = Math.min(lo + 1, frameCount - 1);
-      const alpha     = exactIdx - lo; // 0 → 1 between lo and hi
+      const progress = currentProgressRef.current;
+      const exactIdx = progress * (frameCount - 1);
+      const lo       = Math.floor(exactIdx);
+      const hi       = Math.min(lo + 1, frameCount - 1);
+      const alpha    = exactIdx - lo;
 
-      const pool    = preloadedRef.current;
-      const loEl    = loImgRef.current;
-      const hiEl    = hiImgRef.current;
+      const pool  = preloadedRef.current;
+      const loEl  = loImgRef.current;
+      const hiEl  = hiImgRef.current;
+      const loadFn = loadFrameRef.current;
+
+      // Lookahead: trigger loading for frames ahead of current position
+      const aheadEnd = Math.min(lo + LOOKAHEAD, frameCount - 1);
+      for (let j = lo; j <= aheadEnd; j++) {
+        if (!pool[j]) loadFn(j);
+      }
 
       if (loEl && lo !== loIdxRef.current) {
         const img = pool[lo];
@@ -146,16 +168,13 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         }
       }
 
-      // hiImg sits on top of loImg; its opacity blends the two frames continuously
       if (hiEl) hiEl.style.opacity = String(alpha);
 
-      // Direct DOM: progress bar & parallax word — zero React overhead
       if (progressFill.current)
         progressFill.current.style.width = `${progress * 100}%`;
       if (bgWordRef.current)
         bgWordRef.current.style.transform = `translateY(${-progress * 200}px)`;
 
-      // React state only on threshold crossings
       const nextShowHeadline   = progress > HEADLINE_REVEAL_THRESHOLD;
       const nextShowScrollHint = progress < SCROLL_HINT_FADE_THRESHOLD;
       if (nextShowHeadline !== prevShowHeadline) {
@@ -167,7 +186,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         setShowScrollHint(nextShowScrollHint);
       }
 
-      // Release page scroll at boundaries
       const pending = pendingPageScrollRef.current;
       if (Math.abs(pending) > 0) {
         const atBottom = pending > 0 && progress >= MAX_PROGRESS - PROGRESS_EPSILON;
@@ -247,7 +265,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     >
       <div className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]">
 
-        {/* Poster — shown immediately, fades out once frames are ready */}
+        {/* Poster — shown immediately, fades out once frame 0 is ready */}
         <img
           src={posterSrc}
           alt="" aria-hidden draggable={false}
@@ -263,7 +281,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1 }}
         />
 
-        {/* Overlay frame (hi) — opacity driven by fractional progress between lo and hi */}
+        {/* Overlay frame (hi) — opacity driven by fractional progress */}
         <img
           ref={hiImgRef}
           alt="" aria-hidden draggable={false}
