@@ -20,8 +20,9 @@ export const About: React.FC = () => {
           <div
             style={{
               opacity: isInView ? 1 : 0,
-              transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-              transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+              transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1), transform 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              willChange: isInView ? 'auto' : 'opacity, transform',
             }}
           >
             <SectionLabel text="RRETH NESH" />
@@ -55,8 +56,9 @@ export const About: React.FC = () => {
             className="relative"
             style={{
               opacity: isInView ? 1 : 0,
-              transform: isInView ? 'translateY(0)' : 'translateY(40px)',
-              transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.2s',
+              transform: isInView ? 'translateY(0px)' : 'translateY(40px)',
+              transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.2s, transform 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.2s',
+              willChange: isInView ? 'auto' : 'opacity, transform',
             }}
           >
             <img

@@ -23,6 +23,9 @@ const HEADLINE_REVEAL_THRESHOLD = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
 const LOOKAHEAD = 40; // frames to keep loaded ahead of current position
 const INITIAL_BATCH = 40; // frames to load on mount before user scrolls
+const INERTIA_DAMPING = 0.85; // velocity multiplier per 16ms frame
+const MIN_INERTIA_VELOCITY = 0.5; // px/frame below which inertia stops
+const MAX_INERTIA_VELOCITY = 60; // px/frame cap to prevent overshoot
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -63,6 +66,10 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const loIdxRef    = useRef(-1);
   const hiIdxRef    = useRef(-1);
   const isReadyRef  = useRef(false); // true once frame 0 is decoded — gates scroll interception
+  // Inertia: velocity tracked per frame, applied with damping after touchend
+  const velocityRef       = useRef(0);
+  const lastTouchTimeRef  = useRef(0);
+  const inertiaActiveRef  = useRef(false);
 
   const [isLoaded, setIsLoaded]             = useState(false);
   const [showHeadline, setShowHeadline]     = useState(false);
@@ -137,6 +144,17 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     let prevShowScrollHint = true;
 
     const animate = () => {
+      // Apply touch inertia after finger lifts — decelerates naturally each frame
+      if (inertiaActiveRef.current) {
+        velocityRef.current *= INERTIA_DAMPING;
+        if (Math.abs(velocityRef.current) < MIN_INERTIA_VELOCITY || !isSectionVisible()) {
+          velocityRef.current = 0;
+          inertiaActiveRef.current = false;
+        } else {
+          applyProgressDelta(velocityRef.current, TOUCH_SENSITIVITY, true);
+        }
+      }
+
       currentProgressRef.current = targetProgressRef.current;
       const progress = currentProgressRef.current;
       const exactIdx = progress * (frameCount - 1);
@@ -228,25 +246,52 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       touchYRef.current = e.touches[0].clientY;
+      // Kill any running inertia so the new touch takes over immediately
+      velocityRef.current = 0;
+      inertiaActiveRef.current = false;
+      lastTouchTimeRef.current = performance.now();
     };
 
     const handleTouchMove = (e: TouchEvent) => {
       if (!isReadyRef.current || !isSectionVisible() || touchYRef.current === null || e.touches.length !== 1) return;
       const nextY  = e.touches[0].clientY;
       const deltaY = touchYRef.current - nextY;
+      // Track velocity: normalised to px per 16ms frame for consistent inertia feel
+      const now = performance.now();
+      const dt  = now - lastTouchTimeRef.current;
+      if (dt > 0) {
+        const raw = (deltaY / dt) * 16;
+        velocityRef.current = Math.max(-MAX_INERTIA_VELOCITY, Math.min(MAX_INERTIA_VELOCITY, raw));
+      }
+      lastTouchTimeRef.current = now;
       touchYRef.current = nextY;
       if (!canConsumeScroll(deltaY)) return;
       e.preventDefault();
       applyProgressDelta(deltaY, TOUCH_SENSITIVITY, true);
     };
 
-    const clearTouch = () => { touchYRef.current = null; };
+    // After finger lifts: hand off to inertia in the RAF loop
+    const handleTouchEnd = () => {
+      touchYRef.current = null;
+      if (isReadyRef.current && Math.abs(velocityRef.current) > MIN_INERTIA_VELOCITY) {
+        inertiaActiveRef.current = true;
+      } else {
+        velocityRef.current = 0;
+      }
+    };
+
+    // touchcancel: system took over the gesture — stop everything
+    const clearTouch = () => {
+      touchYRef.current = null;
+      velocityRef.current = 0;
+      inertiaActiveRef.current = false;
+    };
 
     window.addEventListener('wheel',       handleWheel,      { passive: false, capture: true });
     window.addEventListener('keydown',     handleKeyDown,    { capture: true });
     window.addEventListener('touchstart',  handleTouchStart, { passive: true,  capture: true });
     window.addEventListener('touchmove',   handleTouchMove,  { passive: false, capture: true });
-    window.addEventListener('touchend',    clearTouch,       { capture: true });
+    window.addEventListener('touchend',    handleTouchEnd,   { capture: true });
     window.addEventListener('touchcancel', clearTouch,       { capture: true });
 
     return () => {
@@ -254,7 +299,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       window.removeEventListener('keydown',     handleKeyDown,    true);
       window.removeEventListener('touchstart',  handleTouchStart, true);
       window.removeEventListener('touchmove',   handleTouchMove,  true);
-      window.removeEventListener('touchend',    clearTouch,       true);
+      window.removeEventListener('touchend',    handleTouchEnd,   true);
       window.removeEventListener('touchcancel', clearTouch,       true);
     };
   }, [applyProgressDelta, canConsumeScroll, isSectionVisible]);
@@ -263,9 +308,12 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     <section
       ref={sectionRef}
       className="relative w-full"
-      style={{ height: `${Math.max(scrollLength, 1) * 100}vh` }}
+      style={{ height: `${Math.max(scrollLength, 1) * 100}vh`, touchAction: 'none' }}
     >
-      <div className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]">
+      <div
+        className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]"
+        style={{ transform: 'translateZ(0)' }}
+      >
 
         {/* Poster — shown immediately, fades out once frame 0 is ready */}
         <img
@@ -280,7 +328,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           ref={loImgRef}
           alt="" aria-hidden draggable={false}
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1 }}
+          style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1, transform: 'translateZ(0)' }}
         />
 
         {/* Overlay frame (hi) — opacity driven by fractional progress */}
@@ -288,7 +336,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           ref={hiImgRef}
           alt="" aria-hidden draggable={false}
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: 0, zIndex: 2 }}
+          style={{ opacity: 0, zIndex: 2, willChange: 'opacity', transform: 'translateZ(0)' }}
         />
 
         {/* Gradient overlays */}
@@ -305,7 +353,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         <div
           ref={bgWordRef}
           className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden"
-          style={{ zIndex: 4 }}
+          style={{ zIndex: 4, willChange: 'transform' }}
         >
           <span
             className="font-bold text-white/[0.03] uppercase tracking-widest select-none"
