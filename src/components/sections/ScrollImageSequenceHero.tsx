@@ -60,8 +60,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const pendingPageScrollRef = useRef(0);
   const preloadedRef         = useRef<(HTMLImageElement | null)[]>([]);
   const loadFrameRef         = useRef<(i: number) => void>(() => {});
-  const loIdxRef = useRef(-1);
-  const hiIdxRef = useRef(-1);
+  const loIdxRef    = useRef(-1);
+  const hiIdxRef    = useRef(-1);
+  const isReadyRef  = useRef(false); // true once frame 0 is decoded — gates scroll interception
 
   const [isLoaded, setIsLoaded]             = useState(false);
   const [showHeadline, setShowHeadline]     = useState(false);
@@ -84,6 +85,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           const lo = loImgRef.current;
           if (lo) lo.src = img.src;
           loIdxRef.current = 0;
+          isReadyRef.current = true; // ungate scroll interception
           setIsLoaded(true);
         };
       }
@@ -205,13 +207,13 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
-      if (!isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
+      if (!isReadyRef.current || !isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
       e.preventDefault();
       applyProgressDelta(e.deltaY, WHEEL_SENSITIVITY, true);
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isSectionVisible() || shouldIgnoreKeyboardTarget(e.target)) return;
+      if (!isReadyRef.current || !isSectionVisible() || shouldIgnoreKeyboardTarget(e.target)) return;
       let deltaY = 0;
       if (e.key === 'ArrowDown') deltaY = 120;
       if (e.key === 'ArrowUp')   deltaY = -120;
@@ -229,7 +231,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (!isSectionVisible() || touchYRef.current === null || e.touches.length !== 1) return;
+      if (!isReadyRef.current || !isSectionVisible() || touchYRef.current === null || e.touches.length !== 1) return;
       const nextY  = e.touches[0].clientY;
       const deltaY = touchYRef.current - nextY;
       touchYRef.current = nextY;
