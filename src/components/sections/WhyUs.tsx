@@ -51,8 +51,9 @@ export const WhyUs: React.FC = () => {
           <div
             style={{
               opacity: isInView ? 1 : 0,
-              transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-              transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+              transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1), transform 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              willChange: isInView ? 'auto' : 'opacity, transform',
             }}
           >
             <SectionLabel text="PSE NE" color="#999" />
@@ -64,8 +65,9 @@ export const WhyUs: React.FC = () => {
             className="flex items-end"
             style={{
               opacity: isInView ? 1 : 0,
-              transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-              transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.15s',
+              transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+              transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.15s, transform 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.15s',
+              willChange: isInView ? 'auto' : 'opacity, transform',
             }}
           >
             <p className="text-lg text-[#888] leading-relaxed">
@@ -83,11 +85,12 @@ export const WhyUs: React.FC = () => {
             return (
               <div
                 key={reason.num}
-                className="group border border-[#333] p-8 lg:p-10 hover:border-[#c41e3a]/50 transition-all duration-300"
+                className="group border border-[#333] p-8 lg:p-10 hover:border-[#c41e3a]/50 transition-colors duration-300"
                 style={{
                   opacity: isInView ? 1 : 0,
-                  transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-                  transition: `all 0.6s cubic-bezier(0.33, 1, 0.68, 1) ${0.2 + index * 0.08}s`,
+                  transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+                  transition: `opacity 0.6s cubic-bezier(0.33, 1, 0.68, 1) ${0.2 + index * 0.08}s, transform 0.6s cubic-bezier(0.33, 1, 0.68, 1) ${0.2 + index * 0.08}s`,
+                  willChange: isInView ? 'auto' : 'opacity, transform',
                 }}
               >
                 <div className="flex items-start gap-6">

@@ -75,8 +75,9 @@ export const About: React.FC = () => {
           className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3"
           style={{
             opacity: isInView ? 1 : 0,
-            transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-            transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.3s',
+            transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+            transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.3s, transform 0.8s cubic-bezier(0.33, 1, 0.68, 1) 0.3s',
+            willChange: isInView ? 'auto' : 'opacity, transform',
           }}
         >
           {images.map((src, index) => (

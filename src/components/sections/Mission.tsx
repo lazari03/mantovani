@@ -40,8 +40,9 @@ export const Mission: React.FC = () => {
           className="text-[clamp(32px,4vw,56px)] font-normal text-white leading-[1.05] tracking-tight mb-16"
           style={{
             opacity: isInView ? 1 : 0,
-            transform: isInView ? 'translateY(0)' : 'translateY(50px)',
-            transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+            transform: isInView ? 'translateY(0px)' : 'translateY(50px)',
+            transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1), transform 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+            willChange: isInView ? 'auto' : 'opacity, transform',
           }}
         >
           Misioni ynë

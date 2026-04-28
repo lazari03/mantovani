@@ -20,8 +20,9 @@ export const Services: React.FC = () => {
           <div
             style={{
               opacity: isInView ? 1 : 0,
-              transform: isInView ? 'translateY(0)' : 'translateY(30px)',
-              transition: 'all 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              transform: isInView ? 'translateY(0px)' : 'translateY(30px)',
+              transition: 'opacity 0.8s cubic-bezier(0.33, 1, 0.68, 1), transform 0.8s cubic-bezier(0.33, 1, 0.68, 1)',
+              willChange: isInView ? 'auto' : 'opacity, transform',
             }}
           >
             <SectionLabel text="SHËRBIMET" />
@@ -65,8 +66,9 @@ function ServiceCard({
       ref={ref}
       style={{
         opacity: inView ? 1 : 0,
-        transform: inView ? 'translateY(0)' : 'translateY(40px)',
-        transition: `all 0.7s cubic-bezier(0.33, 1, 0.68, 1) ${index * 0.1}s`,
+        transform: inView ? 'translateY(0px)' : 'translateY(40px)',
+        transition: `opacity 0.7s cubic-bezier(0.33, 1, 0.68, 1) ${index * 0.1}s, transform 0.7s cubic-bezier(0.33, 1, 0.68, 1) ${index * 0.1}s`,
+        willChange: inView ? 'auto' : 'opacity, transform',
       }}
     >
       <Link
