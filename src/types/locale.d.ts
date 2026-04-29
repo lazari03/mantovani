@@ -1,0 +1,15 @@
+export type LocaleKey =
+  | 'siteName'
+  | 'projectPrompt'
+  | 'contactUs'
+  | 'message'
+  | 'yourMessage'
+  | 'about'
+  | 'services'
+  | 'whyUs'
+  | 'gallery'
+  | 'mission'
+  | 'footerContact'
+  | 'scrollToExplore'
+  | 'years'
+  | 'projects';

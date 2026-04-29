@@ -12,7 +12,7 @@ interface ScrollImageSequenceHeroProps {
 }
 
 const defaultFramePath = (idx: number) =>
-  `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.jpg`;
+  `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.webp`;
 
 const MIN_PROGRESS = 0;
 const MAX_PROGRESS = 1;
@@ -26,6 +26,9 @@ const INITIAL_BATCH = 40; // frames to load on mount before user scrolls
 const INERTIA_DAMPING = 0.85; // velocity multiplier per 16ms frame
 const MIN_INERTIA_VELOCITY = 0.5; // px/frame below which inertia stops
 const MAX_INERTIA_VELOCITY = 60; // px/frame cap to prevent overshoot
+const MAX_SCROLL_PER_FRAME = 60; // px cap dispatched to page per RAF frame
+const REWIND_SPEED = 0.035; // progress/frame rewind speed (~500ms from 1→0)
+const EASE_FACTOR = 0.14; // lerp speed: current chases target each frame (higher = snappier)
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -70,6 +73,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const velocityRef       = useRef(0);
   const lastTouchTimeRef  = useRef(0);
   const inertiaActiveRef  = useRef(false);
+  // Re-entry rewind: smooth "start over" when user scrolls back up to the hero
+  const wasVisibleRef  = useRef(false);
+  const rewindingRef   = useRef(false);
 
   const [isLoaded, setIsLoaded]             = useState(false);
   const [showHeadline, setShowHeadline]     = useState(false);
@@ -155,7 +161,33 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         }
       }
 
-      currentProgressRef.current = targetProgressRef.current;
+      // Detect re-entry from below: if section just became visible while progress was near end,
+      // start a smooth rewind back to frame 0 ("start over" on return)
+      const nowVisible = isSectionVisible();
+      if (nowVisible && !wasVisibleRef.current && currentProgressRef.current > 0.8) {
+        rewindingRef.current = true;
+        pendingPageScrollRef.current = 0; // clear any stale overflow
+      }
+      wasVisibleRef.current = nowVisible;
+
+      // Progress update: rewind animation takes priority over target when active
+      if (rewindingRef.current) {
+        const newProg = Math.max(0, currentProgressRef.current - REWIND_SPEED);
+        if (newProg <= PROGRESS_EPSILON) {
+          rewindingRef.current = false;
+          currentProgressRef.current = 0;
+          targetProgressRef.current = 0;
+        } else {
+          currentProgressRef.current = newProg;
+          targetProgressRef.current = newProg;
+        }
+      } else {
+        // Ease current toward target — makes frame animation glide rather than snap
+        const diff = targetProgressRef.current - currentProgressRef.current;
+        currentProgressRef.current = Math.abs(diff) < PROGRESS_EPSILON
+          ? targetProgressRef.current
+          : currentProgressRef.current + diff * EASE_FACTOR;
+      }
       const progress = currentProgressRef.current;
       const exactIdx = progress * (frameCount - 1);
       const lo       = Math.floor(exactIdx);
@@ -208,11 +240,15 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
       const pending = pendingPageScrollRef.current;
       if (Math.abs(pending) > 0) {
-        const atBottom = pending > 0 && progress >= MAX_PROGRESS - PROGRESS_EPSILON;
-        const atTop    = pending < 0 && progress <= MIN_PROGRESS + PROGRESS_EPSILON;
+        const target = targetProgressRef.current;
+        const atBottom = pending > 0 && target >= MAX_PROGRESS - PROGRESS_EPSILON;
+        const atTop    = pending < 0 && target <= MIN_PROGRESS + PROGRESS_EPSILON;
         if (atBottom || atTop) {
-          window.scrollBy({ top: pending, left: 0, behavior: 'auto' });
-          pendingPageScrollRef.current = 0;
+          // Use 'instant' to bypass CSS scroll-behavior:smooth — avoids competing animations.
+          // Cap per-frame to prevent a single large jump from accumulated touch overflow.
+          const scrollAmount = Math.sign(pending) * Math.min(Math.abs(pending), MAX_SCROLL_PER_FRAME);
+          window.scrollBy({ top: scrollAmount, left: 0, behavior: 'instant' });
+          pendingPageScrollRef.current -= scrollAmount;
         }
       }
 
@@ -246,9 +282,10 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       touchYRef.current = e.touches[0].clientY;
-      // Kill any running inertia so the new touch takes over immediately
+      // Kill any running inertia or rewind so the new touch takes over immediately
       velocityRef.current = 0;
       inertiaActiveRef.current = false;
+      rewindingRef.current = false;
       lastTouchTimeRef.current = performance.now();
     };
 
