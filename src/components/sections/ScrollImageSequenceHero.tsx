@@ -9,6 +9,13 @@ interface ScrollImageSequenceHeroProps {
   eyebrow?: string;
   headline?: React.ReactNode;
   bgWord?: string;
+  scrollHint?: string;
+  stat1Value?: string;
+  stat1Label?: string;
+  stat2Value?: string;
+  stat2Label?: string;
+  stat3Value?: string;
+  stat3Label?: string;
 }
 
 const defaultFramePath = (idx: number) =>
@@ -52,6 +59,13 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     </>
   ),
   bgWord = 'MANTOVANI',
+  scrollHint = 'Scroll to explore',
+  stat1Value = '25+',
+  stat1Label = 'Vite',
+  stat2Value = '500+',
+  stat2Label = 'Projekte',
+  stat3Value = '50k+',
+  stat3Label = 'm³',
 }) => {
   const sectionRef   = useRef<HTMLElement>(null);
   const loImgRef     = useRef<HTMLImageElement>(null);
@@ -439,7 +453,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           style={{ zIndex: 20, opacity: showScrollHint ? 1 : 0, transition: 'opacity 0.5s ease' }}
         >
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
-            Scroll to explore
+            {scrollHint}
           </span>
           <ChevronDown className="w-5 h-5 text-zinc-500 animate-bounce" />
         </div>
@@ -447,9 +461,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         {/* Stats — desktop only */}
         <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block" style={{ zIndex: 20 }}>
           {[
-            { value: '25+',  label: 'Vite' },
-            { value: '500+', label: 'Projekte' },
-            { value: '50k+', label: 'm³' },
+            { value: stat1Value, label: stat1Label },
+            { value: stat2Value, label: stat2Label },
+            { value: stat3Value, label: stat3Label },
           ].map((stat) => (
             <div key={stat.label} className="text-right mb-6 last:mb-0">
               <div className="text-3xl font-bold text-white">{stat.value}</div>
