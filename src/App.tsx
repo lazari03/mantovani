@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { ScrollImageSequenceHero } from '@/components/sections/ScrollImageSequenceHero';
@@ -9,56 +9,47 @@ import { Sectors } from '@/components/sections/Sectors';
 import { Mission } from '@/components/sections/Mission';
 import { useTranslation, type Lang } from '@/lib/i18nContext';
 
-const PRELOAD_COUNT = 339;
+const FRAME_COUNT   = 339;
 const MIN_LOADER_MS = 2000;
 
+// Build the src for frame i (1-based: frame_0001 … frame_0339)
 const heroFrameSrc = (i: number) =>
   `/assets/hero/frames/frame_${String(i).padStart(4, '0')}.webp`;
 
 function getHeroHeadline(lang: Lang) {
   switch (lang) {
     case 'en':
-      return (
-        <>
-          Quality <span className="text-amber-500">concrete</span>
-          <br />
-          for lasting structures
-        </>
-      );
+      return (<>Quality <span className="text-amber-500">concrete</span><br />for lasting structures</>);
     case 'it':
-      return (
-        <>
-          Calcestruzzo <span className="text-amber-500">di qualità</span>
-          <br />
-          per costruzioni durature
-        </>
-      );
+      return (<>Calcestruzzo <span className="text-amber-500">di qualità</span><br />per costruzioni durature</>);
     default:
-      return (
-        <>
-          Beton <span className="text-amber-500">cilësor</span>
-          <br />
-          për ndërtime të qëndrueshme
-        </>
-      );
+      return (<>Beton <span className="text-amber-500">cilësor</span><br />për ndërtime të qëndrueshme</>);
   }
 }
 
 function App() {
   const { t, lang } = useTranslation();
-  const [loading, setLoading]           = useState(true);
+
+  const [loading,      setLoading]      = useState(true);
   const [loadProgress, setLoadProgress] = useState(0);
-  const [fadeOut, setFadeOut]           = useState(false);
+  const [fadeOut,      setFadeOut]      = useState(false);
+
+  // Pool lives here — built during the MANTOVANI loader, passed to the hero.
+  // Using a ref so the array identity is stable across renders.
+  const heroPool = useRef<(HTMLImageElement | null)[]>(
+    new Array(FRAME_COUNT).fill(null)
+  );
 
   const handleNavigate = useCallback((section: string) => {
-    const element = document.getElementById(section);
-    if (element) element.scrollIntoView({ behavior: 'smooth' });
+    const el = document.getElementById(section);
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    let loaded = 0;
+    let decoded   = 0;
     const startTime = performance.now();
+    const pool    = heroPool.current;
 
     const finish = () => {
       if (cancelled) return;
@@ -72,21 +63,31 @@ function App() {
     };
 
     let finished = false;
-    const onEach = () => {
+    // Count a frame as "done" when its JPEG/WebP is fully decoded (not just downloaded).
+    // This means the hero pool is completely decode-ready by the time the loader ends.
+    const onDecoded = () => {
       if (cancelled || finished) return;
-      loaded++;
-      setLoadProgress(Math.round((loaded / PRELOAD_COUNT) * 100));
-      if (loaded >= PRELOAD_COUNT) {
-        finished = true;
-        finish();
-      }
+      decoded++;
+      setLoadProgress(Math.round((decoded / FRAME_COUNT) * 100));
+      if (decoded >= FRAME_COUNT) { finished = true; finish(); }
     };
 
-    for (let i = 1; i <= PRELOAD_COUNT; i++) {
+    for (let i = 0; i < FRAME_COUNT; i++) {
       const img = new Image();
-      img.onload = onEach;
-      img.onerror = onEach;
-      img.src = heroFrameSrc(i);
+      pool[i]   = img;
+
+      // Give the very first frame top network priority
+      if (i === 0) {
+        (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
+      }
+
+      img.src = heroFrameSrc(i + 1); // 1-based filenames
+
+      img.onload = () => {
+        // decode() runs off the main thread → resolves when GPU-ready
+        img.decode().then(onDecoded).catch(onDecoded);
+      };
+      img.onerror = onDecoded; // don't let errors hang the loader
     }
 
     return () => { cancelled = true; };
@@ -94,29 +95,24 @@ function App() {
 
   return (
     <div className="relative">
+      {/* ── MANTOVANI loader ── */}
       {loading && (
         <div
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-white"
           style={{
-            opacity: fadeOut ? 0 : 1,
-            transition: 'opacity 0.5s ease',
-            pointerEvents: fadeOut ? 'none' : 'auto',
+            opacity:        fadeOut ? 0 : 1,
+            transition:     'opacity 0.5s ease',
+            pointerEvents:  fadeOut ? 'none' : 'auto',
           }}
         >
           <div className="flex flex-col items-center gap-6">
-            <div
-              className="relative select-none"
-              style={{ fontSize: 'clamp(22px, 5.5vw, 60px)' }}
-            >
+            <div className="relative select-none" style={{ fontSize: 'clamp(22px,5.5vw,60px)' }}>
               <span className="block font-bold uppercase tracking-[0.22em] text-[#d4d4d4]">
                 MANTOVANI
               </span>
               <span
                 className="absolute inset-0 font-bold uppercase tracking-[0.22em] text-[#1a1a1a] overflow-hidden whitespace-nowrap"
-                style={{
-                  width: `${loadProgress}%`,
-                  transition: 'width 0.3s ease-out',
-                }}
+                style={{ width: `${loadProgress}%`, transition: 'width 0.3s ease-out' }}
               >
                 MANTOVANI
               </span>
@@ -135,14 +131,16 @@ function App() {
       )}
 
       <Header onNavigate={handleNavigate} />
-      <main
-        style={{
-          filter: loading ? 'blur(4px)' : 'none',
-          transition: 'filter 0.4s ease',
-          pointerEvents: loading ? 'none' : 'auto',
-        }}
-      >
+
+      <main style={{ pointerEvents: loading ? 'none' : 'auto' }}>
+        {/*
+          Pass the pre-built pool to the hero.
+          By the time loading=false the pool contains 339 decode-ready images,
+          so the first scroll is instantly smooth with no decode stutter.
+        */}
         <ScrollImageSequenceHero
+          sharedPool={heroPool.current}
+          frameCount={FRAME_COUNT}
           eyebrow={t('heroEyebrow')}
           headline={getHeroHeadline(lang)}
           scrollHint={t('heroScrollHint')}

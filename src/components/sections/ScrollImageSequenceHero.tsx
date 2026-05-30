@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 interface ScrollImageSequenceHeroProps {
+  /** Pool of pre-decoded HTMLImageElements built by the parent loader.
+   *  When provided the hero skips its own loading — all frames are ready instantly. */
+  sharedPool?: (HTMLImageElement | null)[];
   frameCount?: number;
   framePath?: (idx: number) => string;
   posterSrc?: string;
@@ -28,8 +31,8 @@ const WHEEL_SENSITIVITY    = 0.0009;
 const TOUCH_SENSITIVITY    = 0.0035;
 const HEADLINE_REVEAL_THRESHOLD  = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
-const LOOKAHEAD            = 50;   // frames to decode-ahead of current position
-const INITIAL_BATCH        = 40;
+const LOOKAHEAD            = 50;
+const INITIAL_BATCH        = 40;   // only used when sharedPool is not provided
 const INERTIA_DAMPING      = 0.85;
 const MIN_INERTIA_VELOCITY = 0.5;
 const MAX_INERTIA_VELOCITY = 60;
@@ -46,19 +49,20 @@ const shouldIgnoreKeyboardTarget = (target: EventTarget | null) => {
 };
 
 export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = ({
+  sharedPool,
   frameCount = 339,
-  framePath = defaultFramePath,
-  posterSrc = '/assets/hero/mixer-poster.jpeg',
+  framePath  = defaultFramePath,
+  posterSrc  = '/assets/hero/mixer-poster.jpeg',
   scrollLength = 1,
-  eyebrow = 'Mantovani Beton.',
-  headline = (
+  eyebrow    = 'Mantovani Beton.',
+  headline   = (
     <>
       Beton <span className="text-amber-500">cilësor</span>
       <br />
       për ndërtime të qëndrueshme
     </>
   ),
-  bgWord = 'MANTOVANI',
+  bgWord     = 'MANTOVANI',
   scrollHint = 'Scroll to explore',
   stat1Value = '25+',
   stat1Label = 'Vite',
@@ -80,9 +84,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const pendingPageScrollRef = useRef(0);
   const preloadedRef         = useRef<(HTMLImageElement | null)[]>([]);
   const loadFrameRef         = useRef<(i: number) => void>(() => {});
-  const loIdxRef    = useRef(-1);
-  const hiIdxRef    = useRef(-1);
-  const isReadyRef  = useRef(false);
+  const loIdxRef  = useRef(-1);
+  const hiIdxRef  = useRef(-1);
+  const isReadyRef = useRef(false);
 
   const velocityRef      = useRef(0);
   const lastTouchTimeRef = useRef(0);
@@ -90,11 +94,37 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const wasVisibleRef    = useRef(false);
   const rewindingRef     = useRef(false);
 
-  const [isLoaded, setIsLoaded]             = useState(false);
-  const [showHeadline, setShowHeadline]     = useState(false);
-  const [showScrollHint, setShowScrollHint] = useState(true);
+  const [isLoaded,      setIsLoaded]      = useState(false);
+  const [showHeadline,  setShowHeadline]  = useState(false);
+  const [showScrollHint,setShowScrollHint]= useState(true);
 
+  // ── Pool setup ────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (sharedPool && sharedPool.length >= frameCount) {
+      // ── FAST PATH: use the pool built + decoded by the parent loader ──────
+      preloadedRef.current  = sharedPool;
+      loadFrameRef.current  = () => {}; // pool managed externally
+
+      const frame0 = sharedPool[0];
+      const activate = () => {
+        const lo = loImgRef.current;
+        if (lo && frame0) lo.src = frame0.src;
+        loIdxRef.current  = 0;
+        isReadyRef.current = true;
+        setIsLoaded(true);
+      };
+
+      if (frame0?.complete && frame0.naturalWidth > 0) {
+        activate();
+      } else if (frame0) {
+        // Loader finished before frame 0 fully decoded — wait for it
+        frame0.onload = activate;
+      }
+
+      return; // no cleanup needed — pool is owned by App
+    }
+
+    // ── FALLBACK: hero loads its own pool (no sharedPool provided) ───────────
     const pool: (HTMLImageElement | null)[] = new Array(frameCount).fill(null);
     preloadedRef.current = pool;
 
@@ -106,26 +136,21 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       if (i === 0) {
         (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
         img.onload = () => {
-          // Pre-decode off the main thread before displaying — eliminates
-          // the synchronous JPEG decode that causes jank on CDN (Vercel).
           img.decode().then(() => {
             const lo = loImgRef.current;
             if (lo) lo.src = img.src;
-            loIdxRef.current = 0;
+            loIdxRef.current  = 0;
             isReadyRef.current = true;
             setIsLoaded(true);
           }).catch(() => {
-            // Fallback: display even if decode() isn't supported
             const lo = loImgRef.current;
             if (lo) lo.src = img.src;
-            loIdxRef.current = 0;
+            loIdxRef.current  = 0;
             isReadyRef.current = true;
             setIsLoaded(true);
           });
         };
       } else {
-        // For all other frames: kick off async decode immediately after download
-        // so the browser's decoded-image cache is warm when the RAF loop needs it.
         img.onload = () => { img.decode().catch(() => {}); };
       }
 
@@ -133,19 +158,17 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     };
 
     loadFrameRef.current = loadFrame;
-
-    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) {
-      loadFrame(i);
-    }
+    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) loadFrame(i);
 
     return () => { loadFrameRef.current = () => {}; };
-  }, [frameCount, framePath]);
+  }, [frameCount, framePath, sharedPool]);
 
+  // ── Visibility helpers ────────────────────────────────────────────────────
   const isSectionVisible = useCallback(() => {
-    const section = sectionRef.current;
-    if (!section) return false;
-    const rect = section.getBoundingClientRect();
-    return rect.top < window.innerHeight && rect.bottom > 0;
+    const s = sectionRef.current;
+    if (!s) return false;
+    const r = s.getBoundingClientRect();
+    return r.top < window.innerHeight && r.bottom > 0;
   }, []);
 
   const canConsumeScroll = useCallback((deltaY: number) => {
@@ -165,15 +188,16 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       const overflow = prev + deltaProgress - next;
       if (Math.abs(overflow) <= PROGRESS_EPSILON) return;
       pendingPageScrollRef.current += overflow / sensitivity;
-    },
-    []
+    }, []
   );
 
+  // ── RAF animation loop ────────────────────────────────────────────────────
   useEffect(() => {
     let prevShowHeadline   = false;
     let prevShowScrollHint = true;
 
     const animate = () => {
+      // Inertia
       if (inertiaActiveRef.current) {
         velocityRef.current *= INERTIA_DAMPING;
         if (Math.abs(velocityRef.current) < MIN_INERTIA_VELOCITY || !isSectionVisible()) {
@@ -184,6 +208,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         }
       }
 
+      // Re-entry rewind
       const nowVisible = isSectionVisible();
       if (nowVisible && !wasVisibleRef.current && currentProgressRef.current > 0.8) {
         rewindingRef.current = true;
@@ -191,15 +216,16 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       }
       wasVisibleRef.current = nowVisible;
 
+      // Progress lerp / rewind
       if (rewindingRef.current) {
-        const newProg = Math.max(0, currentProgressRef.current - REWIND_SPEED);
-        if (newProg <= PROGRESS_EPSILON) {
+        const np = Math.max(0, currentProgressRef.current - REWIND_SPEED);
+        if (np <= PROGRESS_EPSILON) {
           rewindingRef.current = false;
           currentProgressRef.current = 0;
           targetProgressRef.current  = 0;
         } else {
-          currentProgressRef.current = newProg;
-          targetProgressRef.current  = newProg;
+          currentProgressRef.current = np;
+          targetProgressRef.current  = np;
         }
       } else {
         const diff = targetProgressRef.current - currentProgressRef.current;
@@ -219,13 +245,12 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       const hiEl   = hiImgRef.current;
       const loadFn = loadFrameRef.current;
 
-      // Lookahead: trigger download + decode for upcoming frames
+      // Lookahead — no-op when using sharedPool (loadFn is a no-op)
       const aheadEnd = Math.min(lo + LOOKAHEAD, frameCount - 1);
       for (let j = lo; j <= aheadEnd; j++) {
         if (!pool[j]) loadFn(j);
       }
 
-      // Only swap src when the image is fully ready (decoded)
       if (loEl && lo !== loIdxRef.current) {
         const img = pool[lo];
         if (img?.complete && img.naturalWidth > 0) {
@@ -250,24 +275,18 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
       const nextShowHeadline   = progress > HEADLINE_REVEAL_THRESHOLD;
       const nextShowScrollHint = progress < SCROLL_HINT_FADE_THRESHOLD;
-      if (nextShowHeadline !== prevShowHeadline) {
-        prevShowHeadline = nextShowHeadline;
-        setShowHeadline(nextShowHeadline);
-      }
-      if (nextShowScrollHint !== prevShowScrollHint) {
-        prevShowScrollHint = nextShowScrollHint;
-        setShowScrollHint(nextShowScrollHint);
-      }
+      if (nextShowHeadline   !== prevShowHeadline)   { prevShowHeadline   = nextShowHeadline;   setShowHeadline(nextShowHeadline); }
+      if (nextShowScrollHint !== prevShowScrollHint) { prevShowScrollHint = nextShowScrollHint; setShowScrollHint(nextShowScrollHint); }
 
       const pending = pendingPageScrollRef.current;
       if (Math.abs(pending) > 0) {
-        const target = targetProgressRef.current;
+        const target   = targetProgressRef.current;
         const atBottom = pending > 0 && target >= MAX_PROGRESS - PROGRESS_EPSILON;
         const atTop    = pending < 0 && target <= MIN_PROGRESS + PROGRESS_EPSILON;
         if (atBottom || atTop) {
-          const scrollAmount = Math.sign(pending) * Math.min(Math.abs(pending), MAX_SCROLL_PER_FRAME);
-          window.scrollBy({ top: scrollAmount, left: 0, behavior: 'instant' });
-          pendingPageScrollRef.current -= scrollAmount;
+          const amount = Math.sign(pending) * Math.min(Math.abs(pending), MAX_SCROLL_PER_FRAME);
+          window.scrollBy({ top: amount, left: 0, behavior: 'instant' });
+          pendingPageScrollRef.current -= amount;
         }
       }
 
@@ -278,6 +297,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     return () => cancelAnimationFrame(rafRef.current);
   }, [frameCount, applyProgressDelta, isSectionVisible]);
 
+  // ── Input handlers ────────────────────────────────────────────────────────
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!isReadyRef.current || !isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
@@ -356,6 +376,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     };
   }, [applyProgressDelta, canConsumeScroll, isSectionVisible]);
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <section
       ref={sectionRef}
@@ -378,21 +399,19 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         <img
           ref={loImgRef}
           alt="" aria-hidden draggable={false}
-          decoding="async"
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1, transform: 'translateZ(0)' }}
         />
 
-        {/* Overlay frame (hi) — cross-fades with fractional progress */}
+        {/* Overlay frame (hi) — cross-fades fractional progress */}
         <img
           ref={hiImgRef}
           alt="" aria-hidden draggable={false}
-          decoding="async"
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           style={{ opacity: 0, zIndex: 2, willChange: 'opacity', transform: 'translateZ(0)' }}
         />
 
-        {/* Gradient overlays */}
+        {/* Gradients */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#07070a] via-transparent to-[#07070a]/50 pointer-events-none" style={{ zIndex: 3 }} />
         <div className="absolute inset-0 bg-gradient-to-r from-[#07070a]/80 via-transparent to-[#07070a]/60 pointer-events-none" style={{ zIndex: 3 }} />
 
@@ -410,15 +429,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         >
           <span
             className="font-bold text-white/[0.03] uppercase tracking-widest select-none"
-            style={{
-              fontSize: 'clamp(32px, 10vw, 120px)',
-              lineHeight: 1.1,
-              wordBreak: 'break-word',
-              whiteSpace: 'pre-line',
-              textAlign: 'center',
-              width: '100%',
-              display: 'block',
-            }}
+            style={{ fontSize: 'clamp(32px,10vw,120px)', lineHeight: 1.1, wordBreak: 'break-word', whiteSpace: 'pre-line', textAlign: 'center', width: '100%', display: 'block' }}
           >
             {bgWord}
           </span>
@@ -437,12 +448,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         {/* Headline — reveals at 78% */}
         <div
           className="absolute bottom-24 left-0 right-0 flex justify-center px-6"
-          style={{
-            zIndex: 20,
-            opacity: showHeadline ? 1 : 0,
-            transform: `translateY(${showHeadline ? 0 : 30}px)`,
-            transition: 'opacity 0.6s ease, transform 0.6s ease',
-          }}
+          style={{ zIndex: 20, opacity: showHeadline ? 1 : 0, transform: `translateY(${showHeadline ? 0 : 30}px)`, transition: 'opacity 0.6s ease, transform 0.6s ease' }}
         >
           <h1 className="text-[clamp(36px,6vw,80px)] font-bold text-white leading-[0.95] tracking-tight text-center">
             {headline}
@@ -454,13 +460,11 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3"
           style={{ zIndex: 20, opacity: showScrollHint ? 1 : 0, transition: 'opacity 0.5s ease' }}
         >
-          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">
-            {scrollHint}
-          </span>
+          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">{scrollHint}</span>
           <ChevronDown className="w-5 h-5 text-zinc-500 animate-bounce" />
         </div>
 
-        {/* Stats — desktop only */}
+        {/* Stats — desktop */}
         <div className="absolute right-8 lg:right-16 top-1/2 -translate-y-1/2 hidden lg:block" style={{ zIndex: 20 }}>
           {[
             { value: stat1Value, label: stat1Label },
