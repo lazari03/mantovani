@@ -5,7 +5,6 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ArrowLeft, Menu, X, Star, Zap, Shield, Heart } from 'lucide-react';
 import { Logo } from '@/components/ui/Logo';
 import { SectionLabel } from '@/components/ui/SectionLabel';
-import { ConcreteCube } from '@/components/three/ConcreteCube';
 import { useInView } from '@/hooks/useInView';
 import { useTranslation, type Lang } from '@/lib/i18nContext';
 
@@ -229,9 +228,7 @@ const AboutPage: React.FC = () => {
               <img src="/assets/gallery/20260427_144429.jpg" alt="" className="w-full aspect-[16/9] object-cover mb-4" loading="lazy" />
               <div className="grid grid-cols-2 gap-4">
                 <img src="/assets/gallery/53530.jpg" alt="" className="w-full aspect-square object-cover" loading="lazy" />
-                <div className="bg-[#111] relative overflow-hidden aspect-square">
-                  <ConcreteCube className="w-full h-full" />
-                </div>
+                <img src="/assets/gallery/53532.jpg" alt="" className="w-full aspect-square object-cover" loading="lazy" />
               </div>
             </div>
           </div>

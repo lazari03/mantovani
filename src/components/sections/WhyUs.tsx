@@ -4,7 +4,6 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useInView } from '@/hooks/useInView';
 import { SectionLabel } from '@/components/ui/SectionLabel';
 import { Shield, Clock, Award, Users, Settings } from 'lucide-react';
-import { ConcreteParticleField } from '@/components/three/ConcreteParticleField';
 import { useTranslation } from '@/lib/i18nContext';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -52,9 +51,6 @@ export const WhyUs: React.FC = () => {
       ref={sectionRef}
       className="relative w-full py-24 lg:py-32 bg-[#1a1a1a] overflow-hidden"
     >
-      {/* 3D particle field background */}
-      <ConcreteParticleField />
-
       {/* Content */}
       <div className="relative z-10 max-w-[1400px] mx-auto px-6 lg:px-10">
 

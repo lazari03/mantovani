@@ -3,7 +3,6 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useInView } from '@/hooks/useInView';
 import { SectionLabel } from '@/components/ui/SectionLabel';
-import { ConcreteCube } from '@/components/three/ConcreteCube';
 import { useTranslation } from '@/lib/i18nContext';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -150,13 +149,6 @@ export const About: React.FC = () => {
               />
             </div>
 
-            {/* 3D concrete cube accent */}
-            <div
-              className="relative bg-[#1a1a1a] overflow-hidden"
-              style={{ height: '220px' }}
-            >
-              <ConcreteCube className="w-full h-full" />
-            </div>
           </div>
         </div>
 
