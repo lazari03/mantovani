@@ -21,21 +21,22 @@ interface ScrollImageSequenceHeroProps {
 const defaultFramePath = (idx: number) =>
   `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.webp`;
 
-const MIN_PROGRESS = 0;
-const MAX_PROGRESS = 1;
-const PROGRESS_EPSILON = 0.0005;
-const WHEEL_SENSITIVITY = 0.0009;
-const TOUCH_SENSITIVITY = 0.0035;
-const HEADLINE_REVEAL_THRESHOLD = 0.78;
+const MIN_PROGRESS         = 0;
+const MAX_PROGRESS         = 1;
+const PROGRESS_EPSILON     = 0.0005;
+const WHEEL_SENSITIVITY    = 0.0009;
+const TOUCH_SENSITIVITY    = 0.0035;
+const HEADLINE_REVEAL_THRESHOLD  = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
-const LOOKAHEAD = 40; // frames to keep loaded ahead of current position
-const INITIAL_BATCH = 40; // frames to load on mount before user scrolls
-const INERTIA_DAMPING = 0.85; // velocity multiplier per 16ms frame
-const MIN_INERTIA_VELOCITY = 0.5; // px/frame below which inertia stops
-const MAX_INERTIA_VELOCITY = 60; // px/frame cap to prevent overshoot
-const MAX_SCROLL_PER_FRAME = 60; // px cap dispatched to page per RAF frame
-const REWIND_SPEED = 0.035; // progress/frame rewind speed (~500ms from 1→0)
-const EASE_FACTOR = 0.14; // lerp speed: current chases target each frame (higher = snappier)
+const INITIAL_BATCH        = 40;   // frames to kick off on mount
+const BITMAP_LOOKAHEAD     = 55;   // frames to pre-decode ahead of current position
+const BITMAP_BEHIND        = 8;    // frames to keep decoded behind current position
+const INERTIA_DAMPING      = 0.85;
+const MIN_INERTIA_VELOCITY = 0.5;
+const MAX_INERTIA_VELOCITY = 60;
+const MAX_SCROLL_PER_FRAME = 60;
+const REWIND_SPEED         = 0.035;
+const EASE_FACTOR          = 0.14;
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -44,6 +45,27 @@ const shouldIgnoreKeyboardTarget = (target: EventTarget | null) => {
   const tag = target.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
 };
+
+// Draw bitmap onto canvas with object-fit:cover semantics
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  cw: number,
+  ch: number,
+  alpha: number
+) {
+  if (alpha <= 0) return;
+  const scale = Math.max(cw / bitmap.width, ch / bitmap.height);
+  const dw = bitmap.width * scale;
+  const dh = bitmap.height * scale;
+  const dx = (cw - dw) / 2;
+  const dy = (ch - dh) / 2;
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(bitmap, dx, dy, dw, dh);
+  ctx.globalAlpha = 1;
+}
+
+type BitmapEntry = ImageBitmap | 'pending' | null;
 
 export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = ({
   frameCount = 339,
@@ -68,8 +90,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   stat3Label = 'm³',
 }) => {
   const sectionRef   = useRef<HTMLElement>(null);
-  const loImgRef     = useRef<HTMLImageElement>(null);
-  const hiImgRef     = useRef<HTMLImageElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const ctxRef       = useRef<CanvasRenderingContext2D | null>(null);
   const progressFill = useRef<HTMLDivElement>(null);
   const bgWordRef    = useRef<HTMLDivElement>(null);
 
@@ -78,64 +100,111 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const currentProgressRef   = useRef(0);
   const targetProgressRef    = useRef(0);
   const pendingPageScrollRef = useRef(0);
-  const preloadedRef         = useRef<(HTMLImageElement | null)[]>([]);
-  const loadFrameRef         = useRef<(i: number) => void>(() => {});
-  const loIdxRef    = useRef(-1);
-  const hiIdxRef    = useRef(-1);
-  const isReadyRef  = useRef(false); // true once frame 0 is decoded — gates scroll interception
-  // Inertia: velocity tracked per frame, applied with damping after touchend
-  const velocityRef       = useRef(0);
-  const lastTouchTimeRef  = useRef(0);
-  const inertiaActiveRef  = useRef(false);
-  // Re-entry rewind: smooth "start over" when user scrolls back up to the hero
-  const wasVisibleRef  = useRef(false);
-  const rewindingRef   = useRef(false);
+
+  // Download pool: HTMLImageElement (just for network fetching)
+  const imagePool  = useRef<(HTMLImageElement | null)[]>([]);
+  // Decode pool: ImageBitmap decoded off main thread via createImageBitmap()
+  const bitmapPool = useRef<BitmapEntry[]>([]);
+
+  const loadFrameRef = useRef<(i: number) => void>(() => {});
+  const isReadyRef   = useRef(false);
+
+  const velocityRef      = useRef(0);
+  const lastTouchTimeRef = useRef(0);
+  const inertiaActiveRef = useRef(false);
+  const wasVisibleRef    = useRef(false);
+  const rewindingRef     = useRef(false);
+
+  // Track last rendered lo/hi/alpha to avoid redundant canvas draws
+  const prevLoRef    = useRef(-1);
+  const prevHiRef    = useRef(-1);
+  const prevAlphaRef = useRef(-1);
 
   const [isLoaded, setIsLoaded]             = useState(false);
   const [showHeadline, setShowHeadline]     = useState(false);
   const [showScrollHint, setShowScrollHint] = useState(true);
 
-  // Progressive preload: load frame 0 immediately, then INITIAL_BATCH frames,
-  // then load on-demand via lookahead in the RAF loop.
+  // ─── Canvas size ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const pool: (HTMLImageElement | null)[] = new Array(frameCount).fill(null);
-    preloadedRef.current = pool;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      if (w === 0 || h === 0) return;
+      canvas.width  = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      // Re-cache context after resize (context is invalidated by dimension change)
+      ctxRef.current = canvas.getContext('2d');
+      // Force a redraw by invalidating cached indices
+      prevLoRef.current    = -1;
+      prevHiRef.current    = -1;
+      prevAlphaRef.current = -1;
+    };
+
+    resize();
+    window.addEventListener('resize', resize, { passive: true });
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+
+  // ─── Frame loading + decoding ─────────────────────────────────────────────
+  useEffect(() => {
+    const imgPool: (HTMLImageElement | null)[] = new Array(frameCount).fill(null);
+    const bmPool: BitmapEntry[]               = new Array(frameCount).fill(null);
+    imagePool.current  = imgPool;
+    bitmapPool.current = bmPool;
 
     const loadFrame = (i: number) => {
-      if (i < 0 || i >= frameCount || pool[i]) return;
+      if (i < 0 || i >= frameCount) return;
+      if (imgPool[i] !== null || bmPool[i] !== null) return; // already in-flight or done
+
       const img = new window.Image();
-      pool[i] = img;
-      // Give frame 0 maximum priority so the poster swaps out ASAP
-      if (i === 0) {
-        (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
-        img.onload = () => {
-          const lo = loImgRef.current;
-          if (lo) lo.src = img.src;
-          loIdxRef.current = 0;
-          isReadyRef.current = true; // ungate scroll interception
-          setIsLoaded(true);
-        };
-      }
+      if (i === 0) (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
+      imgPool[i] = img;
+      bmPool[i]  = 'pending';
+
       img.src = framePath(i + 1);
+
+      const decode = async () => {
+        try {
+          // img.decode() forces decode off the main thread before we touch the pixels
+          await img.decode();
+          // createImageBitmap gives us a GPU-ready bitmap — drawImage(bitmap) = zero-cost blit
+          const bitmap = await createImageBitmap(img);
+          bmPool[i] = bitmap;
+          if (i === 0 && !isReadyRef.current) {
+            isReadyRef.current = true;
+            setIsLoaded(true);
+          }
+        } catch {
+          bmPool[i] = null; // allow retry next lookahead tick
+        }
+      };
+
+      img.onload  = decode;
+      img.onerror = () => { bmPool[i] = null; };
     };
 
     loadFrameRef.current = loadFrame;
 
-    // Load first batch only — RAF loop handles the rest as user scrolls
-    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) {
-      loadFrame(i);
-    }
+    // Kick off the first batch immediately
+    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) loadFrame(i);
 
     return () => {
       loadFrameRef.current = () => {};
+      // Release all GPU bitmaps on unmount
+      bmPool.forEach(b => { if (b instanceof ImageBitmap) b.close(); });
     };
   }, [frameCount, framePath]);
 
+  // ─── Section visibility ───────────────────────────────────────────────────
   const isSectionVisible = useCallback(() => {
-    const section = sectionRef.current;
-    if (!section) return false;
-    const rect = section.getBoundingClientRect();
-    return rect.top < window.innerHeight && rect.bottom > 0;
+    const s = sectionRef.current;
+    if (!s) return false;
+    const r = s.getBoundingClientRect();
+    return r.top < window.innerHeight && r.bottom > 0;
   }, []);
 
   const canConsumeScroll = useCallback((deltaY: number) => {
@@ -159,12 +228,13 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     []
   );
 
+  // ─── RAF animation loop ───────────────────────────────────────────────────
   useEffect(() => {
     let prevShowHeadline   = false;
     let prevShowScrollHint = true;
 
     const animate = () => {
-      // Apply touch inertia after finger lifts — decelerates naturally each frame
+      // Touch inertia
       if (inertiaActiveRef.current) {
         velocityRef.current *= INERTIA_DAMPING;
         if (Math.abs(velocityRef.current) < MIN_INERTIA_VELOCITY || !isSectionVisible()) {
@@ -175,72 +245,94 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         }
       }
 
-      // Detect re-entry from below: if section just became visible while progress was near end,
-      // start a smooth rewind back to frame 0 ("start over" on return)
+      // Re-entry rewind
       const nowVisible = isSectionVisible();
       if (nowVisible && !wasVisibleRef.current && currentProgressRef.current > 0.8) {
         rewindingRef.current = true;
-        pendingPageScrollRef.current = 0; // clear any stale overflow
+        pendingPageScrollRef.current = 0;
       }
       wasVisibleRef.current = nowVisible;
 
-      // Progress update: rewind animation takes priority over target when active
+      // Progress lerp / rewind
       if (rewindingRef.current) {
         const newProg = Math.max(0, currentProgressRef.current - REWIND_SPEED);
         if (newProg <= PROGRESS_EPSILON) {
           rewindingRef.current = false;
           currentProgressRef.current = 0;
-          targetProgressRef.current = 0;
+          targetProgressRef.current  = 0;
         } else {
           currentProgressRef.current = newProg;
-          targetProgressRef.current = newProg;
+          targetProgressRef.current  = newProg;
         }
       } else {
-        // Ease current toward target — makes frame animation glide rather than snap
         const diff = targetProgressRef.current - currentProgressRef.current;
         currentProgressRef.current = Math.abs(diff) < PROGRESS_EPSILON
           ? targetProgressRef.current
           : currentProgressRef.current + diff * EASE_FACTOR;
       }
-      const progress = currentProgressRef.current;
-      const exactIdx = progress * (frameCount - 1);
-      const lo       = Math.floor(exactIdx);
-      const hi       = Math.min(lo + 1, frameCount - 1);
-      const alpha    = exactIdx - lo;
 
-      const pool  = preloadedRef.current;
-      const loEl  = loImgRef.current;
-      const hiEl  = hiImgRef.current;
-      const loadFn = loadFrameRef.current;
+      const progress  = currentProgressRef.current;
+      const exactIdx  = progress * (frameCount - 1);
+      const lo        = Math.floor(exactIdx);
+      const hi        = Math.min(lo + 1, frameCount - 1);
+      const alpha     = exactIdx - lo;
 
-      // Lookahead: trigger loading for frames ahead of current position
-      const aheadEnd = Math.min(lo + LOOKAHEAD, frameCount - 1);
-      for (let j = lo; j <= aheadEnd; j++) {
-        if (!pool[j]) loadFn(j);
+      const bmPool  = bitmapPool.current;
+      const loadFn  = loadFrameRef.current;
+
+      // Trigger decode for the lookahead window
+      const decodeStart = Math.max(0, lo - 2);
+      const decodeEnd   = Math.min(lo + BITMAP_LOOKAHEAD, frameCount - 1);
+      for (let j = decodeStart; j <= decodeEnd; j++) {
+        if (bmPool[j] === null) loadFn(j);
       }
 
-      if (loEl && lo !== loIdxRef.current) {
-        const img = pool[lo];
-        if (img?.complete && img.naturalWidth > 0) {
-          loEl.src = img.src;
-          loIdxRef.current = lo;
-        }
-      }
-      if (hiEl && hi !== hiIdxRef.current) {
-        const img = pool[hi];
-        if (img?.complete && img.naturalWidth > 0) {
-          hiEl.src = img.src;
-          hiIdxRef.current = hi;
+      // Release bitmaps that are far behind current position (free GPU memory)
+      const closeIdx = lo - BITMAP_BEHIND - 1;
+      if (closeIdx >= 0) {
+        const old = bmPool[closeIdx];
+        if (old instanceof ImageBitmap) {
+          old.close();
+          bmPool[closeIdx] = null;
+          // Also allow the HTMLImageElement to be GC'd
+          if (imagePool.current[closeIdx]) imagePool.current[closeIdx] = null;
         }
       }
 
-      if (hiEl) hiEl.style.opacity = String(alpha);
+      // Canvas render — only if lo/hi/alpha changed meaningfully
+      const alphaChanged = Math.abs(alpha - prevAlphaRef.current) > 0.004;
+      if (lo !== prevLoRef.current || hi !== prevHiRef.current || alphaChanged) {
+        const ctx    = ctxRef.current;
+        const canvas = canvasRef.current;
+        const loBm   = bmPool[lo];
+        const hiBm   = bmPool[hi];
 
+        if (ctx && canvas && canvas.width > 0 && canvas.height > 0) {
+          const cw = canvas.width;
+          const ch = canvas.height;
+
+          ctx.clearRect(0, 0, cw, ch);
+
+          if (loBm instanceof ImageBitmap) {
+            drawCover(ctx, loBm, cw, ch, 1);
+          }
+          if (hiBm instanceof ImageBitmap && alpha > 0.004) {
+            drawCover(ctx, hiBm, cw, ch, alpha);
+          }
+
+          prevLoRef.current    = lo;
+          prevHiRef.current    = hi;
+          prevAlphaRef.current = alpha;
+        }
+      }
+
+      // Progress bar (direct DOM — no React re-render)
       if (progressFill.current)
         progressFill.current.style.width = `${progress * 100}%`;
       if (bgWordRef.current)
         bgWordRef.current.style.transform = `translateY(${-progress * 200}px)`;
 
+      // Headline + scroll hint state (only setState on actual change)
       const nextShowHeadline   = progress > HEADLINE_REVEAL_THRESHOLD;
       const nextShowScrollHint = progress < SCROLL_HINT_FADE_THRESHOLD;
       if (nextShowHeadline !== prevShowHeadline) {
@@ -252,14 +344,13 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         setShowScrollHint(nextShowScrollHint);
       }
 
+      // Pass excess scroll to page
       const pending = pendingPageScrollRef.current;
       if (Math.abs(pending) > 0) {
         const target = targetProgressRef.current;
         const atBottom = pending > 0 && target >= MAX_PROGRESS - PROGRESS_EPSILON;
         const atTop    = pending < 0 && target <= MIN_PROGRESS + PROGRESS_EPSILON;
         if (atBottom || atTop) {
-          // Use 'instant' to bypass CSS scroll-behavior:smooth — avoids competing animations.
-          // Cap per-frame to prevent a single large jump from accumulated touch overflow.
           const scrollAmount = Math.sign(pending) * Math.min(Math.abs(pending), MAX_SCROLL_PER_FRAME);
           window.scrollBy({ top: scrollAmount, left: 0, behavior: 'instant' });
           pendingPageScrollRef.current -= scrollAmount;
@@ -271,8 +362,9 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     rafRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [frameCount]);
+  }, [frameCount, applyProgressDelta, isSectionVisible]);
 
+  // ─── Input handlers (scroll / keyboard / touch) ──── unchanged ────────────
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!isReadyRef.current || !isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
@@ -296,7 +388,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       touchYRef.current = e.touches[0].clientY;
-      // Kill any running inertia or rewind so the new touch takes over immediately
       velocityRef.current = 0;
       inertiaActiveRef.current = false;
       rewindingRef.current = false;
@@ -307,9 +398,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       if (!isReadyRef.current || !isSectionVisible() || touchYRef.current === null || e.touches.length !== 1) return;
       const nextY  = e.touches[0].clientY;
       const deltaY = touchYRef.current - nextY;
-      // Track velocity: normalised to px per 16ms frame for consistent inertia feel
-      const now = performance.now();
-      const dt  = now - lastTouchTimeRef.current;
+      const now    = performance.now();
+      const dt     = now - lastTouchTimeRef.current;
       if (dt > 0) {
         const raw = (deltaY / dt) * 16;
         velocityRef.current = Math.max(-MAX_INERTIA_VELOCITY, Math.min(MAX_INERTIA_VELOCITY, raw));
@@ -321,7 +411,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       applyProgressDelta(deltaY, TOUCH_SENSITIVITY, true);
     };
 
-    // After finger lifts: hand off to inertia in the RAF loop
     const handleTouchEnd = () => {
       touchYRef.current = null;
       if (isReadyRef.current && Math.abs(velocityRef.current) > MIN_INERTIA_VELOCITY) {
@@ -331,7 +420,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       }
     };
 
-    // touchcancel: system took over the gesture — stop everything
     const clearTouch = () => {
       touchYRef.current = null;
       velocityRef.current = 0;
@@ -355,6 +443,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     };
   }, [applyProgressDelta, canConsumeScroll, isSectionVisible]);
 
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <section
       ref={sectionRef}
@@ -365,29 +454,28 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]"
         style={{ transform: 'translateZ(0)' }}
       >
-
-        {/* Poster — shown immediately, fades out once frame 0 is ready */}
+        {/* Poster — visible until frame 0 bitmap is ready */}
         <img
           src={posterSrc}
           alt="" aria-hidden draggable={false}
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: isLoaded ? 0 : 1, transition: 'opacity 0.35s ease' }}
+          style={{ opacity: isLoaded ? 0 : 1, transition: 'opacity 0.35s ease', zIndex: 1 }}
         />
 
-        {/* Base frame (lo) — always fully opaque */}
-        <img
-          ref={loImgRef}
-          alt="" aria-hidden draggable={false}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1, transform: 'translateZ(0)' }}
-        />
-
-        {/* Overlay frame (hi) — opacity driven by fractional progress */}
-        <img
-          ref={hiImgRef}
-          alt="" aria-hidden draggable={false}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: 0, zIndex: 2, willChange: 'opacity', transform: 'translateZ(0)' }}
+        {/*
+          Single canvas replaces the two <img> cross-fade elements.
+          Frames are drawn via ctx.drawImage(ImageBitmap) — pure GPU blit,
+          zero main-thread decode cost on every frame transition.
+        */}
+        <canvas
+          ref={canvasRef}
+          aria-hidden
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{
+            opacity: isLoaded ? 1 : 0,
+            transition: 'opacity 0.35s ease',
+            zIndex: 2,
+          }}
         />
 
         {/* Gradient overlays */}
@@ -447,7 +535,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           </h1>
         </div>
 
-        {/* Scroll hint — fades at 5% */}
+        {/* Scroll hint */}
         <div
           className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3"
           style={{ zIndex: 20, opacity: showScrollHint ? 1 : 0, transition: 'opacity 0.5s ease' }}
