@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { ScrollImageSequenceHero } from '@/components/sections/ScrollImageSequenceHero';
@@ -9,12 +9,8 @@ import { Sectors } from '@/components/sections/Sectors';
 import { Mission } from '@/components/sections/Mission';
 import { useTranslation, type Lang } from '@/lib/i18nContext';
 
-const FRAME_COUNT   = 339;
 const MIN_LOADER_MS = 2000;
-
-// Build the src for frame i (1-based: frame_0001 … frame_0339)
-const heroFrameSrc = (i: number) =>
-  `/assets/hero/frames/frame_${String(i).padStart(4, '0')}.webp`;
+const HERO_VIDEO_SRC = '/assets/hero/hero.mp4';
 
 function getHeroHeadline(lang: Lang) {
   switch (lang) {
@@ -34,22 +30,17 @@ function App() {
   const [loadProgress, setLoadProgress] = useState(0);
   const [fadeOut,      setFadeOut]      = useState(false);
 
-  // Pool lives here — built during the MANTOVANI loader, passed to the hero.
-  // Using a ref so the array identity is stable across renders.
-  const heroPool = useRef<(HTMLImageElement | null)[]>(
-    new Array(FRAME_COUNT).fill(null)
-  );
-
   const handleNavigate = useCallback((section: string) => {
     const el = document.getElementById(section);
     if (el) el.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  // Preload the hero video while MANTOVANI fills in. fetch() puts the
+  // response in the HTTP cache, so the <video src> in the hero plays
+  // instantly once loading flips to false — no re-download.
   useEffect(() => {
     let cancelled = false;
-    let decoded   = 0;
     const startTime = performance.now();
-    const pool    = heroPool.current;
 
     const finish = () => {
       if (cancelled) return;
@@ -62,33 +53,21 @@ function App() {
       }, wait);
     };
 
-    let finished = false;
-    // Count a frame as "done" when its JPEG/WebP is fully decoded (not just downloaded).
-    // This means the hero pool is completely decode-ready by the time the loader ends.
-    const onDecoded = () => {
-      if (cancelled || finished) return;
-      decoded++;
-      setLoadProgress(Math.round((decoded / FRAME_COUNT) * 100));
-      if (decoded >= FRAME_COUNT) { finished = true; finish(); }
-    };
-
-    for (let i = 0; i < FRAME_COUNT; i++) {
-      const img = new Image();
-      pool[i]   = img;
-
-      // Give the very first frame top network priority
-      if (i === 0) {
-        (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
-      }
-
-      img.src = heroFrameSrc(i + 1); // 1-based filenames
-
-      img.onload = () => {
-        // decode() runs off the main thread → resolves when GPU-ready
-        img.decode().then(onDecoded).catch(onDecoded);
-      };
-      img.onerror = onDecoded; // don't let errors hang the loader
-    }
+    fetch(HERO_VIDEO_SRC)
+      .then(async (res) => {
+        const total = Number(res.headers.get('content-length')) || 0;
+        if (!total || !res.body) { setLoadProgress(100); return; }
+        let received = 0;
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || cancelled) break;
+          received += value.length;
+          setLoadProgress(Math.min(100, Math.round((received / total) * 100)));
+        }
+      })
+      .catch(() => setLoadProgress(100)) // don't let a network hiccup hang the loader
+      .finally(finish);
 
     return () => { cancelled = true; };
   }, []);
@@ -133,14 +112,8 @@ function App() {
       <Header onNavigate={handleNavigate} />
 
       <main style={{ pointerEvents: loading ? 'none' : 'auto' }}>
-        {/*
-          Pass the pre-built pool to the hero.
-          By the time loading=false the pool contains 339 decode-ready images,
-          so the first scroll is instantly smooth with no decode stutter.
-        */}
         <ScrollImageSequenceHero
-          sharedPool={heroPool.current}
-          frameCount={FRAME_COUNT}
+          videoSrc={HERO_VIDEO_SRC}
           eyebrow={t('heroEyebrow')}
           headline={getHeroHeadline(lang)}
           scrollHint={t('heroScrollHint')}

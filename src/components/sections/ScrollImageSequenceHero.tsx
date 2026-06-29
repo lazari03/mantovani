@@ -2,11 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 interface ScrollImageSequenceHeroProps {
-  /** Pool of pre-decoded HTMLImageElements built by the parent loader.
-   *  When provided the hero skips its own loading — all frames are ready instantly. */
-  sharedPool?: (HTMLImageElement | null)[];
-  frameCount?: number;
-  framePath?: (idx: number) => string;
+  videoSrc?: string;
   posterSrc?: string;
   scrollLength?: number;
   eyebrow?: string;
@@ -21,9 +17,6 @@ interface ScrollImageSequenceHeroProps {
   stat3Label?: string;
 }
 
-const defaultFramePath = (idx: number) =>
-  `/assets/hero/frames/frame_${String(idx).padStart(4, '0')}.webp`;
-
 const MIN_PROGRESS         = 0;
 const MAX_PROGRESS         = 1;
 const PROGRESS_EPSILON     = 0.0005;
@@ -31,8 +24,6 @@ const WHEEL_SENSITIVITY    = 0.0009;
 const TOUCH_SENSITIVITY    = 0.0035;
 const HEADLINE_REVEAL_THRESHOLD  = 0.78;
 const SCROLL_HINT_FADE_THRESHOLD = 0.05;
-const LOOKAHEAD            = 50;
-const INITIAL_BATCH        = 40;   // only used when sharedPool is not provided
 const INERTIA_DAMPING      = 0.85;
 const MIN_INERTIA_VELOCITY = 0.5;
 const MAX_INERTIA_VELOCITY = 60;
@@ -48,11 +39,17 @@ const shouldIgnoreKeyboardTarget = (target: EventTarget | null) => {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
 };
 
+/**
+ * ponytail: a 339-frame image sequence is a video. Browsers hardware-decode
+ * real video and seek (currentTime) natively — that's the actual fix for
+ * "smooth like a video", not a hand-rolled bitmap/canvas decode pipeline.
+ * Frames were pre-encoded once via:
+ *   ffmpeg -framerate 30 -i frame_%04d.webp -c:v libx264 -pix_fmt yuv420p
+ *          -crf 20 -preset slow -movflags +faststart hero.mp4
+ */
 export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = ({
-  sharedPool,
-  frameCount = 339,
-  framePath  = defaultFramePath,
-  posterSrc  = '/assets/hero/mixer-poster.jpeg',
+  videoSrc  = '/assets/hero/hero.mp4',
+  posterSrc = '/assets/hero/mixer-poster.jpeg',
   scrollLength = 1,
   eyebrow    = 'Mantovani Beton.',
   headline   = (
@@ -72,8 +69,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   stat3Label = 'm³',
 }) => {
   const sectionRef   = useRef<HTMLElement>(null);
-  const loImgRef     = useRef<HTMLImageElement>(null);
-  const hiImgRef     = useRef<HTMLImageElement>(null);
+  const videoRef     = useRef<HTMLVideoElement>(null);
   const progressFill = useRef<HTMLDivElement>(null);
   const bgWordRef    = useRef<HTMLDivElement>(null);
 
@@ -82,10 +78,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const currentProgressRef   = useRef(0);
   const targetProgressRef    = useRef(0);
   const pendingPageScrollRef = useRef(0);
-  const preloadedRef         = useRef<(HTMLImageElement | null)[]>([]);
-  const loadFrameRef         = useRef<(i: number) => void>(() => {});
-  const loIdxRef  = useRef(-1);
-  const hiIdxRef  = useRef(-1);
   const isReadyRef = useRef(false);
 
   const velocityRef      = useRef(0);
@@ -94,76 +86,23 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
   const wasVisibleRef    = useRef(false);
   const rewindingRef     = useRef(false);
 
-  const [isLoaded,      setIsLoaded]      = useState(false);
-  const [showHeadline,  setShowHeadline]  = useState(false);
-  const [showScrollHint,setShowScrollHint]= useState(true);
+  const [isLoaded,       setIsLoaded]       = useState(false);
+  const [showHeadline,   setShowHeadline]   = useState(false);
+  const [showScrollHint, setShowScrollHint] = useState(true);
 
-  // ── Pool setup ────────────────────────────────────────────────────────────
+  // Video is ready to scrub once enough is buffered to seek anywhere
   useEffect(() => {
-    if (sharedPool && sharedPool.length >= frameCount) {
-      // ── FAST PATH: use the pool built + decoded by the parent loader ──────
-      preloadedRef.current  = sharedPool;
-      loadFrameRef.current  = () => {}; // pool managed externally
-
-      const frame0 = sharedPool[0];
-      const activate = () => {
-        const lo = loImgRef.current;
-        if (lo && frame0) lo.src = frame0.src;
-        loIdxRef.current  = 0;
-        isReadyRef.current = true;
-        setIsLoaded(true);
-      };
-
-      if (frame0?.complete && frame0.naturalWidth > 0) {
-        activate();
-      } else if (frame0) {
-        // Loader finished before frame 0 fully decoded — wait for it
-        frame0.onload = activate;
-      }
-
-      return; // no cleanup needed — pool is owned by App
-    }
-
-    // ── FALLBACK: hero loads its own pool (no sharedPool provided) ───────────
-    const pool: (HTMLImageElement | null)[] = new Array(frameCount).fill(null);
-    preloadedRef.current = pool;
-
-    const loadFrame = (i: number) => {
-      if (i < 0 || i >= frameCount || pool[i]) return;
-      const img = new window.Image();
-      pool[i] = img;
-
-      if (i === 0) {
-        (img as HTMLImageElement & { fetchpriority?: string }).fetchpriority = 'high';
-        img.onload = () => {
-          img.decode().then(() => {
-            const lo = loImgRef.current;
-            if (lo) lo.src = img.src;
-            loIdxRef.current  = 0;
-            isReadyRef.current = true;
-            setIsLoaded(true);
-          }).catch(() => {
-            const lo = loImgRef.current;
-            if (lo) lo.src = img.src;
-            loIdxRef.current  = 0;
-            isReadyRef.current = true;
-            setIsLoaded(true);
-          });
-        };
-      } else {
-        img.onload = () => { img.decode().catch(() => {}); };
-      }
-
-      img.src = framePath(i + 1);
+    const v = videoRef.current;
+    if (!v) return;
+    const onReady = () => {
+      isReadyRef.current = true;
+      setIsLoaded(true);
     };
+    if (v.readyState >= 2) onReady();
+    else v.addEventListener('loadeddata', onReady, { once: true });
+    return () => v.removeEventListener('loadeddata', onReady);
+  }, []);
 
-    loadFrameRef.current = loadFrame;
-    for (let i = 0; i < Math.min(INITIAL_BATCH, frameCount); i++) loadFrame(i);
-
-    return () => { loadFrameRef.current = () => {}; };
-  }, [frameCount, framePath, sharedPool]);
-
-  // ── Visibility helpers ────────────────────────────────────────────────────
   const isSectionVisible = useCallback(() => {
     const s = sectionRef.current;
     if (!s) return false;
@@ -191,13 +130,11 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     }, []
   );
 
-  // ── RAF animation loop ────────────────────────────────────────────────────
   useEffect(() => {
     let prevShowHeadline   = false;
     let prevShowScrollHint = true;
 
     const animate = () => {
-      // Inertia
       if (inertiaActiveRef.current) {
         velocityRef.current *= INERTIA_DAMPING;
         if (Math.abs(velocityRef.current) < MIN_INERTIA_VELOCITY || !isSectionVisible()) {
@@ -208,7 +145,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         }
       }
 
-      // Re-entry rewind
       const nowVisible = isSectionVisible();
       if (nowVisible && !wasVisibleRef.current && currentProgressRef.current > 0.8) {
         rewindingRef.current = true;
@@ -216,7 +152,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       }
       wasVisibleRef.current = nowVisible;
 
-      // Progress lerp / rewind
       if (rewindingRef.current) {
         const np = Math.max(0, currentProgressRef.current - REWIND_SPEED);
         if (np <= PROGRESS_EPSILON) {
@@ -235,38 +170,12 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
       }
 
       const progress = currentProgressRef.current;
-      const exactIdx = progress * (frameCount - 1);
-      const lo       = Math.floor(exactIdx);
-      const hi       = Math.min(lo + 1, frameCount - 1);
-      const alpha    = exactIdx - lo;
 
-      const pool   = preloadedRef.current;
-      const loEl   = loImgRef.current;
-      const hiEl   = hiImgRef.current;
-      const loadFn = loadFrameRef.current;
-
-      // Lookahead — no-op when using sharedPool (loadFn is a no-op)
-      const aheadEnd = Math.min(lo + LOOKAHEAD, frameCount - 1);
-      for (let j = lo; j <= aheadEnd; j++) {
-        if (!pool[j]) loadFn(j);
+      // Scrub the video — native hardware-decoded seek, no per-frame JS decode
+      const v = videoRef.current;
+      if (v && v.duration) {
+        v.currentTime = progress * v.duration;
       }
-
-      if (loEl && lo !== loIdxRef.current) {
-        const img = pool[lo];
-        if (img?.complete && img.naturalWidth > 0) {
-          loEl.src = img.src;
-          loIdxRef.current = lo;
-        }
-      }
-      if (hiEl && hi !== hiIdxRef.current) {
-        const img = pool[hi];
-        if (img?.complete && img.naturalWidth > 0) {
-          hiEl.src = img.src;
-          hiIdxRef.current = hi;
-        }
-      }
-
-      if (hiEl) hiEl.style.opacity = String(alpha);
 
       if (progressFill.current)
         progressFill.current.style.width = `${progress * 100}%`;
@@ -295,9 +204,8 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
 
     rafRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [frameCount, applyProgressDelta, isSectionVisible]);
+  }, [applyProgressDelta, isSectionVisible]);
 
-  // ── Input handlers ────────────────────────────────────────────────────────
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!isReadyRef.current || !isSectionVisible() || !canConsumeScroll(e.deltaY)) return;
@@ -376,7 +284,6 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
     };
   }, [applyProgressDelta, canConsumeScroll, isSectionVisible]);
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <section
       ref={sectionRef}
@@ -387,7 +294,7 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
         className="sticky top-0 w-full h-screen overflow-hidden bg-[#07070a]"
         style={{ transform: 'translateZ(0)' }}
       >
-        {/* Poster — shown until frame 0 is ready */}
+        {/* Poster — shown until video can be scrubbed */}
         <img
           src={posterSrc}
           alt="" aria-hidden draggable={false}
@@ -395,20 +302,17 @@ export const ScrollImageSequenceHero: React.FC<ScrollImageSequenceHeroProps> = (
           style={{ opacity: isLoaded ? 0 : 1, transition: 'opacity 0.35s ease' }}
         />
 
-        {/* Base frame (lo) */}
-        <img
-          ref={loImgRef}
-          alt="" aria-hidden draggable={false}
+        {/* Video — scrubbed via currentTime, hardware-decoded by the browser */}
+        <video
+          ref={videoRef}
+          src={videoSrc}
+          poster={posterSrc}
+          muted
+          playsInline
+          preload="auto"
+          aria-hidden
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           style={{ opacity: isLoaded ? 1 : 0, transition: 'opacity 0.35s ease', zIndex: 1, transform: 'translateZ(0)' }}
-        />
-
-        {/* Overlay frame (hi) — cross-fades fractional progress */}
-        <img
-          ref={hiImgRef}
-          alt="" aria-hidden draggable={false}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: 0, zIndex: 2, willChange: 'opacity', transform: 'translateZ(0)' }}
         />
 
         {/* Gradients */}
